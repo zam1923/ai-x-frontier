@@ -1,8 +1,33 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { getSyncStatus, runHourlySync, runDeepSync } from "./scheduler";
 import supabase from "./supabase";
+
+// Vercelサーバーレス環境では scheduler をスキップ（node-cronはランタイムエラーになる）
+const IS_VERCEL = !!process.env.VERCEL;
+
+async function getScheduler() {
+  if (IS_VERCEL) return null;
+  return import("./scheduler");
+}
+
+// Vercel Cronの次回実行時刻計算
+function getNextCronHour(): string {
+  const now = new Date();
+  const next = new Date(now);
+  next.setUTCMinutes(0, 0, 0);
+  next.setUTCHours(next.getUTCHours() + 1);
+  return next.toISOString();
+}
+
+function getNextCronDaily(): string {
+  // 21:00 UTC = 翁朝6時 JST
+  const now = new Date();
+  const next = new Date(now);
+  next.setUTCHours(21, 0, 0, 0);
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+  return next.toISOString();
+}
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   // ===== ARTICLES =====
@@ -108,12 +133,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ===== 自律運用API =====
 
-  // GET /api/sync/status — 現在のスケジューラステータスを返す
-  app.get("/api/sync/status", (_req, res) => {
-    res.json(getSyncStatus());
+  // GET /api/sync/status — スケジューラステータス（Vercelではcron情報のみ）
+  app.get("/api/sync/status", async (_req, res) => {
+    if (IS_VERCEL) {
+      // Vercel環境: sync_logsから最終実行情報を返す
+      try {
+        const { data: logs } = await supabase
+          .from("sync_logs")
+          .select("*")
+          .order("ran_at", { ascending: false })
+          .limit(1);
+        const last = logs?.[0];
+        const details = last?.details
+          ? (typeof last.details === "string" ? JSON.parse(last.details) : last.details)
+          : null;
+        return res.json({
+          isRunning: last?.status === "running",
+          lastRunAt: last?.ran_at || null,
+          lastRunType: last?.sync_type || null,
+          lastResult: details,
+          nextHourlyAt: getNextCronHour(),
+          nextDeepAt: getNextCronDaily(),
+          totalRuns: 0,
+          mode: "vercel-cron",
+        });
+      } catch (e: any) {
+        return res.status(500).json({ error: e.message });
+      }
+    }
+    // ローカル/自ホスト環境: node-cronスケジューラから取得
+    const scheduler = await getScheduler();
+    res.json(scheduler ? scheduler.getSyncStatus() : { isRunning: false, mode: "unknown" });
   });
 
-  // GET /api/sync/logs — 直近の実行ログを返す
+  // GET /api/sync/logs — 直近の実行ログ
   app.get("/api/sync/logs", async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 20;
@@ -132,12 +185,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // POST /api/sync/trigger/hourly — 毎時同期を手動トリガー
   app.post("/api/sync/trigger/hourly", async (_req, res) => {
     try {
-      const status = getSyncStatus();
+      if (IS_VERCEL) {
+        // Vercel: cronエンドポイントを内部呼び出し
+        const { runHourlySyncDirect } = await import("./sync-runner");
+        runHourlySyncDirect().catch(console.error);
+        return res.json({ message: "毎時同期を開始しました", type: "hourly", mode: "vercel" });
+      }
+      const scheduler = await getScheduler();
+      if (!scheduler) return res.status(503).json({ error: "scheduler unavailable" });
+      const status = scheduler.getSyncStatus();
       if (status.isRunning) {
         return res.status(409).json({ error: "同期処理が既に実行中です" });
       }
-      // 非同期で実行（レスポンスはすぐ返す）
-      runHourlySync().catch((err) =>
+      scheduler.runHourlySync().catch((err: any) =>
         console.error("[routes] hourly sync error:", err)
       );
       res.json({ message: "毎時同期を開始しました", type: "hourly" });
@@ -149,11 +209,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // POST /api/sync/trigger/deep — 深掘り同期を手動トリガー
   app.post("/api/sync/trigger/deep", async (_req, res) => {
     try {
-      const status = getSyncStatus();
+      if (IS_VERCEL) {
+        const { runDeepSyncDirect } = await import("./sync-runner");
+        runDeepSyncDirect().catch(console.error);
+        return res.json({ message: "深掘り同期を開始しました", type: "deep", mode: "vercel" });
+      }
+      const scheduler = await getScheduler();
+      if (!scheduler) return res.status(503).json({ error: "scheduler unavailable" });
+      const status = scheduler.getSyncStatus();
       if (status.isRunning) {
         return res.status(409).json({ error: "同期処理が既に実行中です" });
       }
-      runDeepSync().catch((err) =>
+      scheduler.runDeepSync().catch((err: any) =>
         console.error("[routes] deep sync error:", err)
       );
       res.json({ message: "深掘り同期を開始しました", type: "deep" });

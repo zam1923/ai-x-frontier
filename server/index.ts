@@ -4,7 +4,7 @@ import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "node:http";
-import { startScheduler } from "./scheduler";
+// startScheduler: Vercel環境以外でのみインポート
 
 const app = express();
 const httpServer = createServer(app);
@@ -101,8 +101,10 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
-      // 自律運用スケジューラを起動
-      startScheduler();
+      // 自律運用スケジューラを起動（Vercel以外の環境のみ）
+      if (!process.env.VERCEL) {
+        import("./scheduler").then(m => m.startScheduler()).catch(console.error);
+      }
     },
   );
 })();
