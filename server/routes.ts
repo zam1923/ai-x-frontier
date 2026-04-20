@@ -245,51 +245,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // POST /api/sync/test-grok — Grok Live Search API の生レスポンスを確認（デバッグ用）
+  // POST /api/sync/test-grok — Grok Agent Tools API の生レスポンスを確認（デバッグ用）
   app.post("/api/sync/test-grok", async (_req, res) => {
     try {
       const apiKey = process.env.GROK_API_KEY;
       if (!apiKey) return res.status(500).json({ error: "GROK_API_KEY not set" });
 
-      const response = await fetch("https://api.x.ai/v1/chat/completions", {
+      const model = process.env.GROK_MODEL || "grok-3-latest";
+      const response = await fetch("https://api.x.ai/v1/responses", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "grok-3-latest",
-          messages: [
+          model,
+          input: [
             {
               role: "system",
-              content:
-                'Return JSON only: {"title":"...","summary":"...","heat_score":50}',
+              content: 'Return JSON only: {"title":"...","summary":"...","heat_score":50}',
             },
             {
               role: "user",
               content: "最新のAI技術ニュースを1件教えてください。",
             },
           ],
-          temperature: 0.7,
-          max_tokens: 500,
-          search_parameters: {
-            mode: "on",
-            sources: [{ type: "x" }],
-            max_search_results: 5,
-          },
+          tools: [{ type: "x_search" }],
         }),
       });
 
       const raw = await response.json();
-      const msg = raw.choices?.[0]?.message ?? {};
+      const outputMsg = raw.output?.find(
+        (o: any) => o.type === "message" || o.role === "assistant"
+      );
+      const contentText =
+        raw.output_text ??
+        outputMsg?.content?.find((c: any) => c.type === "output_text" || c.type === "text")?.text ??
+        "";
       return res.json({
         http_status: response.status,
         ok: response.ok,
+        model_used: model,
         response_top_keys: Object.keys(raw),
-        message_keys: Object.keys(msg),
-        content_preview: String(msg.content ?? "").slice(0, 300),
+        content_preview: String(contentText).slice(0, 400),
         citations_root: (raw.citations ?? []).length,
-        citations_message: (msg.citations ?? []).length,
+        output_items: (raw.output ?? []).map((o: any) => ({
+          type: o.type,
+          role: o.role,
+          content_types: Array.isArray(o.content)
+            ? o.content.map((c: any) => c.type)
+            : typeof o.content,
+        })),
         error: raw.error ?? null,
       });
     } catch (e: any) {
