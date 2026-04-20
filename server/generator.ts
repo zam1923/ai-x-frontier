@@ -142,39 +142,36 @@ export async function generateArticleWithLiveSearch(
       ? `@${batchHandles[0]} の最新AI関連X投稿を検索して記事を生成してください。`
       : `次のAI研究者・企業の最新X投稿を検索して、最も重要なトピックについて記事を生成してください：\n${batchHandles.map((h) => `@${h}`).join("、")}`;
 
-  try {
-    const { content, posts } = await callGrokWithLiveSearch(
-      ARTICLE_LIVE_SEARCH_SYSTEM_PROMPT,
-      userContent,
-      batchHandles.length > 0 ? batchHandles : undefined,
-      Math.max(15, batchHandles.length * 3)
+  // エラーは呼び出し元（scheduler）に伝播させて errors[] に記録させる
+  const { content, posts } = await callGrokWithLiveSearch(
+    ARTICLE_LIVE_SEARCH_SYSTEM_PROMPT,
+    userContent,
+    batchHandles.length > 0 ? batchHandles : undefined,
+    Math.max(15, batchHandles.length * 3)
+  );
+
+  const parsed = extractJSON(content);
+  if (!parsed) {
+    throw new Error(
+      `JSON parse failed. content preview: ${content.slice(0, 150)}`
     );
-
-    const parsed = extractJSON(content);
-    if (!parsed) {
-      console.error("[generator] JSON parse failed, content preview:", content.slice(0, 200));
-      return { article: null, posts };
-    }
-    const heatScore = Math.min(100, Math.max(0, Number(parsed.heat_score) || 50));
-
-    return {
-      article: {
-        title: parsed.title || "AI最新動向まとめ",
-        summary: parsed.summary || "",
-        content: parsed.content || "",
-        source_handle: sourceHandle,
-        source_url: handles.length === 1 ? `https://x.com/${sourceHandle}` : "",
-        published_at: new Date().toISOString(),
-        heat_score: heatScore,
-        tags: Array.isArray(parsed.tags) ? parsed.tags : [],
-        entity_ids: [],
-      },
-      posts,
-    };
-  } catch (err) {
-    console.error("[generator] generateArticleWithLiveSearch error:", err);
-    return { article: null, posts: [] };
   }
+  const heatScore = Math.min(100, Math.max(0, Number(parsed.heat_score) || 50));
+
+  return {
+    article: {
+      title: parsed.title || "AI最新動向まとめ",
+      summary: parsed.summary || "",
+      content: parsed.content || "",
+      source_handle: sourceHandle,
+      source_url: handles.length === 1 ? `https://x.com/${sourceHandle}` : "",
+      published_at: new Date().toISOString(),
+      heat_score: heatScore,
+      tags: Array.isArray(parsed.tags) ? parsed.tags : [],
+      entity_ids: [],
+    },
+    posts,
+  };
 }
 
 // ─────────────────────────────────────────────
@@ -199,60 +196,54 @@ export async function updateEntityProfileWithLiveSearch(
 ): Promise<{ updated: boolean; posts: LiveSearchPost[] }> {
   const userContent = `対象: ${entityName} (@${handle})\n@${handle} の最新X投稿を検索して、この人物/企業のプロフィールを更新してください。`;
 
-  try {
-    const { content, posts } = await callGrokWithLiveSearch(
-      ENTITY_UPDATE_SYSTEM_PROMPT,
-      userContent,
-      [handle],
-      15
+  // エラーは呼び出し元に伝播させる
+  const { content, posts } = await callGrokWithLiveSearch(
+    ENTITY_UPDATE_SYSTEM_PROMPT,
+    userContent,
+    [handle],
+    15
+  );
+
+  const parsed = extractJSON(content);
+  if (!parsed) {
+    throw new Error(
+      `entity JSON parse failed. content preview: ${content.slice(0, 150)}`
     );
-
-    const parsed = extractJSON(content);
-    if (!parsed) {
-      console.error("[generator] entity JSON parse failed, content preview:", content.slice(0, 200));
-      return { updated: false, posts };
-    }
-
-    const { data: existing } = await supabase
-      .from("entities")
-      .select("key_contributions")
-      .eq("id", entityId)
-      .single();
-
-    const existingContribs: string[] = existing?.key_contributions
-      ? typeof existing.key_contributions === "string"
-        ? JSON.parse(existing.key_contributions)
-        : existing.key_contributions
-      : [];
-
-    const newContribs = Array.isArray(parsed.new_contributions)
-      ? parsed.new_contributions
-      : [];
-    const mergedContribs = Array.from(
-      new Set([...newContribs, ...existingContribs])
-    ).slice(0, 8);
-
-    const updatePayload: any = { last_synced_at: new Date().toISOString() };
-    if (parsed.thinking_style) updatePayload.thinking_style = parsed.thinking_style;
-    if (parsed.japan_insight) updatePayload.japan_insight = parsed.japan_insight;
-    if (parsed.bio_ja) updatePayload.bio_ja = parsed.bio_ja;
-    if (mergedContribs.length > 0)
-      updatePayload.key_contributions = JSON.stringify(mergedContribs);
-
-    const { error } = await supabase
-      .from("entities")
-      .update(updatePayload)
-      .eq("id", entityId);
-
-    if (error) {
-      console.error("[generator] entity update error:", error);
-      return { updated: false, posts };
-    }
-    return { updated: true, posts };
-  } catch (err) {
-    console.error("[generator] updateEntityProfileWithLiveSearch error:", err);
-    return { updated: false, posts: [] };
   }
+
+  const { data: existing } = await supabase
+    .from("entities")
+    .select("key_contributions")
+    .eq("id", entityId)
+    .single();
+
+  const existingContribs: string[] = existing?.key_contributions
+    ? typeof existing.key_contributions === "string"
+      ? JSON.parse(existing.key_contributions)
+      : existing.key_contributions
+    : [];
+
+  const newContribs = Array.isArray(parsed.new_contributions)
+    ? parsed.new_contributions
+    : [];
+  const mergedContribs = Array.from(
+    new Set([...newContribs, ...existingContribs])
+  ).slice(0, 8);
+
+  const updatePayload: any = { last_synced_at: new Date().toISOString() };
+  if (parsed.thinking_style) updatePayload.thinking_style = parsed.thinking_style;
+  if (parsed.japan_insight) updatePayload.japan_insight = parsed.japan_insight;
+  if (parsed.bio_ja) updatePayload.bio_ja = parsed.bio_ja;
+  if (mergedContribs.length > 0)
+    updatePayload.key_contributions = JSON.stringify(mergedContribs);
+
+  const { error } = await supabase
+    .from("entities")
+    .update(updatePayload)
+    .eq("id", entityId);
+
+  if (error) throw new Error(`entity update error: ${error.message}`);
+  return { updated: true, posts };
 }
 
 // ─────────────────────────────────────────────
