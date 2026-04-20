@@ -251,7 +251,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const apiKey = process.env.GROK_API_KEY;
       if (!apiKey) return res.status(500).json({ error: "GROK_API_KEY not set" });
 
-      const model = process.env.GROK_MODEL || "grok-3-latest";
+      const model = process.env.GROK_MODEL || "grok-4-1-fast";
       const response = await fetch("https://api.x.ai/v1/responses", {
         method: "POST",
         headers: {
@@ -262,39 +262,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           model,
           input: [
             {
-              role: "system",
-              content: 'Return JSON only: {"title":"...","summary":"...","heat_score":50}',
-            },
-            {
               role: "user",
-              content: "最新のAI技術ニュースを1件教えてください。",
+              content: "@karpathy の最新X投稿を3件検索してください。",
             },
           ],
-          tools: [{ type: "x_search" }],
+          tools: [{ type: "x_search", allowed_x_handles: ["karpathy"] }],
         }),
       });
 
       const raw = await response.json();
-      const outputMsg = raw.output?.find(
-        (o: any) => o.type === "message" || o.role === "assistant"
-      );
-      const contentText =
-        raw.output_text ??
-        outputMsg?.content?.find((c: any) => c.type === "output_text" || c.type === "text")?.text ??
-        "";
+      // output 配列の全構造をそのまま返す（どこに投稿URLがあるか確認するため）
       return res.json({
         http_status: response.status,
         ok: response.ok,
         model_used: model,
-        response_top_keys: Object.keys(raw),
-        content_preview: String(contentText).slice(0, 400),
-        citations_root: (raw.citations ?? []).length,
-        output_items: (raw.output ?? []).map((o: any) => ({
+        top_keys: Object.keys(raw),
+        output_text_preview: String(raw.output_text ?? "").slice(0, 500),
+        citations_root: raw.citations ?? [],
+        output_full: (raw.output ?? []).map((o: any) => ({
           type: o.type,
-          role: o.role,
-          content_types: Array.isArray(o.content)
-            ? o.content.map((c: any) => c.type)
-            : typeof o.content,
+          role: o.role ?? null,
+          id: o.id ?? null,
+          // content は最初の500文字だけ
+          content_preview: typeof o.content === "string"
+            ? o.content.slice(0, 500)
+            : Array.isArray(o.content)
+              ? o.content.map((c: any) => ({
+                  type: c.type,
+                  text_preview: String(c.text ?? c.content ?? "").slice(0, 300),
+                  annotations: c.annotations ?? [],
+                }))
+              : o.content,
         })),
         error: raw.error ?? null,
       });
