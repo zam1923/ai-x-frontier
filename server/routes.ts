@@ -101,6 +101,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ===== X POSTS =====
+
+  // GET /api/posts — 全ポスト一覧（ダッシュボード用）
+  app.get("/api/posts", async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 100;
+      const offset = parseInt(req.query.offset as string) || 0;
+      const { data, error } = await supabase
+        .from("x_posts")
+        .select("*")
+        .order("posted_at", { ascending: false })
+        .range(offset, offset + limit - 1);
+      if (error) throw error;
+      res.json(data || []);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.get("/api/entities/:id/posts", async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 20;
