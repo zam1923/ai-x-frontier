@@ -180,8 +180,8 @@ export async function runHourlySync(): Promise<{
           );
         }
 
-        // heat_score >= 20 の記事のみ保存
-        if (article && article.heat_score >= 20) {
+        // heat_score >= 5 の記事を保存（低すぎる場合のみ除外）
+        if (article && article.heat_score >= 5) {
           const { error } = await supabase.from("articles").insert({
             ...article,
             tags: JSON.stringify(article.tags),
@@ -213,7 +213,7 @@ export async function runHourlySync(): Promise<{
         postsCollected += saved;
       }
 
-      if (trendArticle && trendArticle.heat_score >= 20) {
+      if (trendArticle && trendArticle.heat_score >= 5) {
         const { error } = await supabase.from("articles").insert({
           ...trendArticle,
           tags: JSON.stringify(trendArticle.tags),

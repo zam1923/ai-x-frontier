@@ -245,6 +245,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // POST /api/sync/test-grok — Grok Live Search API の生レスポンスを確認（デバッグ用）
+  app.post("/api/sync/test-grok", async (_req, res) => {
+    try {
+      const apiKey = process.env.GROK_API_KEY;
+      if (!apiKey) return res.status(500).json({ error: "GROK_API_KEY not set" });
+
+      const response = await fetch("https://api.x.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "grok-3-latest",
+          messages: [
+            {
+              role: "system",
+              content:
+                'Return JSON only: {"title":"...","summary":"...","heat_score":50}',
+            },
+            {
+              role: "user",
+              content: "最新のAI技術ニュースを1件教えてください。",
+            },
+          ],
+          temperature: 0.7,
+          max_tokens: 500,
+          search_parameters: {
+            mode: "on",
+            sources: [{ type: "x" }],
+            max_search_results: 5,
+          },
+        }),
+      });
+
+      const raw = await response.json();
+      const msg = raw.choices?.[0]?.message ?? {};
+      return res.json({
+        http_status: response.status,
+        ok: response.ok,
+        response_top_keys: Object.keys(raw),
+        message_keys: Object.keys(msg),
+        content_preview: String(msg.content ?? "").slice(0, 300),
+        citations_root: (raw.citations ?? []).length,
+        citations_message: (msg.citations ?? []).length,
+        error: raw.error ?? null,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   // ===== HEALTH CHECK =====
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
