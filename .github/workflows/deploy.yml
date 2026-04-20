@@ -1,4 +1,4 @@
-name: Vercel デプロイ
+name: 型チェック & Render デプロイ
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
-    name: Vercel Production Deploy
+  typecheck:
+    name: TypeScript 型チェック
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,11 +21,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Deploy to Vercel
+      - name: Type check
+        run: npm run check
+
+  deploy:
+    name: Render デプロイ通知
+    needs: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Deploy Hook (optional)
+        # RENDER_DEPLOY_HOOK シークレットが設定されている場合のみ実行
+        # Render ダッシュボード → Settings → Deploy Hook で取得できます
+        if: ${{ env.RENDER_DEPLOY_HOOK != '' }}
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
         run: |
-          npx vercel --prod --yes \
-            --token ${{ secrets.VERCEL_TOKEN }} \
-            --build-env GROK_API_KEY=${{ secrets.GROK_API_KEY }} \
-            --build-env APIFY_API_TOKEN=${{ secrets.APIFY_API_TOKEN }} \
-            --build-env SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
-            --build-env SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          echo "Render デプロイフック実行中..."
+          curl -s "$RENDER_DEPLOY_HOOK" > /dev/null
+          echo "完了"
+
+      - name: Deploy info
+        if: ${{ env.RENDER_DEPLOY_HOOK == '' }}
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          echo "Render は GitHub main ブランチへのプッシュで自動デプロイされます。"
+          echo "（Render ダッシュボードで GitHub 連携を設定済みの場合）"

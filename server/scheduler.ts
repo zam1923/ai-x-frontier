@@ -369,10 +369,10 @@ function getNextCronTime(cronExpr: string): string {
     next.setHours(next.getHours() + 1);
     return next.toISOString();
   }
-  if (cronExpr.includes("0 6 * * *")) {
+  if (cronExpr.includes("0 21 * * *")) {
     const next = new Date(now);
-    next.setHours(6, 0, 0, 0);
-    if (next <= now) next.setDate(next.getDate() + 1);
+    next.setUTCHours(21, 0, 0, 0);
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
     return next.toISOString();
   }
   return "";
@@ -401,7 +401,7 @@ export function startScheduler() {
   // 毎朝6時 JST (= 21:00 UTC): 深掘りプロフィール更新
   cron.schedule("0 21 * * *", async () => {
     console.log("[scheduler] 深掘り同期トリガー");
-    syncStatus.nextDeepAt = getNextCronTime("0 6 * * *");
+    syncStatus.nextDeepAt = getNextCronTime("0 21 * * *");
     try {
       await runDeepSync();
     } catch (err) {
