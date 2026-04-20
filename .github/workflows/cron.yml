@@ -1,0 +1,57 @@
+name: 自律運用 Cron
+
+on:
+  schedule:
+    # 毎時0分 UTC (= 毎時9時JST)
+    - cron: "0 * * * *"
+    # 毎日21:00 UTC (= 翌朝6:00 JST) — 深掘り更新
+    - cron: "0 21 * * *"
+  # 手動実行も可能
+  workflow_dispatch:
+    inputs:
+      sync_type:
+        description: "同期タイプ (hourly | daily)"
+        required: false
+        default: "hourly"
+
+jobs:
+  hourly-sync:
+    name: 毎時同期（Xポスト収集 + 記事生成）
+    # 毎時cronまたは手動でhourly指定
+    if: |
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.sync_type == 'hourly' || github.event.inputs.sync_type == '') ||
+      github.event.schedule == '0 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: X収集 + 記事生成
+        run: |
+          echo "毎時同期トリガー: $(date)"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${{ secrets.VERCEL_DEPLOY_URL }}/api/cron/hourly" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json")
+          echo "Response status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::warning::同期APIが${STATUS}を返しました"
+          fi
+
+  daily-sync:
+    name: 毎日深掘り更新（プロフィール更新）
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.sync_type == 'daily' ||
+      github.event.schedule == '0 21 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: エンティティ深掘り更新
+        run: |
+          echo "深掘り同期トリガー: $(date)"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${{ secrets.VERCEL_DEPLOY_URL }}/api/cron/daily" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json")
+          echo "Response status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::warning::深掘り同期APIが${STATUS}を返しました"
+          fi
