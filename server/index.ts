@@ -4,6 +4,7 @@ import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "node:http";
+import { startScheduler } from "./scheduler";
 
 const app = express();
 const httpServer = createServer(app);
@@ -100,6 +101,8 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      // 自律運用スケジューラを起動
+      startScheduler();
     },
   );
 })();

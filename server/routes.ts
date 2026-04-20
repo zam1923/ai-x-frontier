@@ -1,6 +1,8 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { getSyncStatus, runHourlySync, runDeepSync } from "./scheduler";
+import supabase from "./supabase";
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   // ===== ARTICLES =====
@@ -99,6 +101,62 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const date = req.query.date as string | undefined;
       const tags = await storage.getTrendTags(date);
       res.json(tags);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ===== 自律運用API =====
+
+  // GET /api/sync/status — 現在のスケジューラステータスを返す
+  app.get("/api/sync/status", (_req, res) => {
+    res.json(getSyncStatus());
+  });
+
+  // GET /api/sync/logs — 直近の実行ログを返す
+  app.get("/api/sync/logs", async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 20;
+      const { data, error } = await supabase
+        .from("sync_logs")
+        .select("*")
+        .order("ran_at", { ascending: false })
+        .limit(limit);
+      if (error) throw error;
+      res.json(data || []);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/sync/trigger/hourly — 毎時同期を手動トリガー
+  app.post("/api/sync/trigger/hourly", async (_req, res) => {
+    try {
+      const status = getSyncStatus();
+      if (status.isRunning) {
+        return res.status(409).json({ error: "同期処理が既に実行中です" });
+      }
+      // 非同期で実行（レスポンスはすぐ返す）
+      runHourlySync().catch((err) =>
+        console.error("[routes] hourly sync error:", err)
+      );
+      res.json({ message: "毎時同期を開始しました", type: "hourly" });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/sync/trigger/deep — 深掘り同期を手動トリガー
+  app.post("/api/sync/trigger/deep", async (_req, res) => {
+    try {
+      const status = getSyncStatus();
+      if (status.isRunning) {
+        return res.status(409).json({ error: "同期処理が既に実行中です" });
+      }
+      runDeepSync().catch((err) =>
+        console.error("[routes] deep sync error:", err)
+      );
+      res.json({ message: "深掘り同期を開始しました", type: "deep" });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

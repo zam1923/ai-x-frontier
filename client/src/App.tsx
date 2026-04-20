@@ -7,6 +7,7 @@ import Sidebar from "@/components/Sidebar";
 import Dashboard from "@/pages/Dashboard";
 import EntityPage from "@/pages/EntityPage";
 import ArticlePage from "@/pages/ArticlePage";
+import AdminPanel from "@/pages/AdminPanel";
 import NotFound from "@/pages/not-found";
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
               <Route path="/" component={Dashboard} />
               <Route path="/entity/:id" component={EntityPage} />
               <Route path="/article/:id" component={ArticlePage} />
+              <Route path="/admin" component={AdminPanel} />
               <Route component={NotFound} />
             </Switch>
           </main>

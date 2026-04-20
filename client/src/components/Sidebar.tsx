@@ -6,12 +6,13 @@ import type { Entity } from "@shared/schema";
 import {
   LayoutDashboard, FlaskConical, Briefcase, Building2,
   ChevronRight, ChevronLeft, Zap, Users, Globe,
-  TrendingUp, Activity
+  TrendingUp, Activity, Settings
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { href: "/", icon: LayoutDashboard, label: "ダッシュボード" },
+  { href: "/admin", icon: Settings, label: "管理パネル" },
 ];
 
 const ENTITY_SECTIONS = [
