@@ -183,7 +183,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // POST /api/sync/trigger/hourly — 毎時同期を手動トリガー
-  app.post("/api/sync/trigger/hourly", async (_req, res) => {
+  app.post("/api/sync/trigger/hourly", async (req, res) => {
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const auth = req.headers.authorization;
+      if (auth !== `Bearer ${cronSecret}`) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+    }
     try {
       if (IS_VERCEL) {
         // Vercel: cronエンドポイントを内部呼び出し
@@ -207,7 +214,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // POST /api/sync/trigger/deep — 深掘り同期を手動トリガー
-  app.post("/api/sync/trigger/deep", async (_req, res) => {
+  app.post("/api/sync/trigger/deep", async (req, res) => {
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const auth = req.headers.authorization;
+      if (auth !== `Bearer ${cronSecret}`) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+    }
     try {
       if (IS_VERCEL) {
         const { runDeepSyncDirect } = await import("./sync-runner");
