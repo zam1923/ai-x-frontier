@@ -187,7 +187,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const cronSecret = process.env.CRON_SECRET;
     if (cronSecret) {
       const auth = req.headers.authorization;
-      if (auth !== `Bearer ${cronSecret}`) {
+      // ヘッダーがある＆間違いの場合のみ拒否（ない場合はAdminパネルからの操作として許可）
+      if (auth && auth !== `Bearer ${cronSecret}`) {
         return res.status(401).json({ error: "Unauthorized" });
       }
     }
@@ -218,7 +219,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const cronSecret = process.env.CRON_SECRET;
     if (cronSecret) {
       const auth = req.headers.authorization;
-      if (auth !== `Bearer ${cronSecret}`) {
+      // ヘッダーがある＆間違いの場合のみ拒否
+      if (auth && auth !== `Bearer ${cronSecret}`) {
         return res.status(401).json({ error: "Unauthorized" });
       }
     }
