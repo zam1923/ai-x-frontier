@@ -1,13 +1,14 @@
 /**
- * generator.ts — Grok API（Live Search）で記事・深掘りコンテンツを自動生成するエンジン
- * Apify不要: Grok Live Search が X 投稿をリアルタイム検索 + 記事生成を一括実行
+ * generator.ts — Grok Agent Tools API で記事・深掘りコンテンツを自動生成するエンジン
+ * /v1/responses + tools: x_search を使用（search_parameters は 2026/1 廃止）
  */
 
 import supabase from "./supabase";
 import type { InsertArticle } from "@shared/schema";
 
-const GROK_API_URL = "https://api.x.ai/v1/chat/completions";
-const GROK_MODEL = "grok-3-latest";
+// Agent Tools API エンドポイント
+const GROK_API_URL = "https://api.x.ai/v1/responses";
+const GROK_MODEL = process.env.GROK_MODEL || "grok-3-latest";
 
 // ─────────────────────────────────────────────
 // Live Search で取得したポストの型
@@ -22,10 +23,10 @@ export interface LiveSearchPost {
 }
 
 // ─────────────────────────────────────────────
-// Grok Live Search 付き API 呼び出し（共通）
+// Grok Agent Tools API 呼び出し（共通）
 // ─────────────────────────────────────────────
 
-// Live Search はテキスト中に JSON を埋め込むことがあるため、正規表現でも抽出を試みる
+// レスポンスのテキスト中に JSON が埋め込まれている場合も抽出できるようにする
 function extractJSON(text: string): any {
   try {
     return JSON.parse(text);
@@ -43,14 +44,15 @@ async function callGrokWithLiveSearch(
   systemPrompt: string,
   userContent: string,
   xHandles?: string[],
-  maxResults = 15
+  _maxResults = 15
 ): Promise<{ content: string; posts: LiveSearchPost[] }> {
   const apiKey = process.env.GROK_API_KEY;
   if (!apiKey) throw new Error("GROK_API_KEY not set");
 
-  const source: Record<string, any> = { type: "x" };
+  // x_search ツール（allowed_x_handles は最大10件）
+  const tool: Record<string, any> = { type: "x_search" };
   if (xHandles && xHandles.length > 0) {
-    source.x_handles = xHandles;
+    tool.allowed_x_handles = xHandles.slice(0, 10);
   }
 
   const res = await fetch(GROK_API_URL, {
@@ -61,18 +63,11 @@ async function callGrokWithLiveSearch(
     },
     body: JSON.stringify({
       model: GROK_MODEL,
-      messages: [
+      input: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userContent },
       ],
-      temperature: 0.7,
-      max_tokens: 2000,
-      // response_format は Live Search と併用不可のため省略
-      search_parameters: {
-        mode: "on",
-        sources: [source],
-        max_search_results: maxResults,
-      },
+      tools: [tool],
     }),
   });
 
@@ -82,16 +77,26 @@ async function callGrokWithLiveSearch(
   }
 
   const data = await res.json();
-  const content: string = data.choices?.[0]?.message?.content ?? "";
 
-  // citations は root または message 内にある場合がある
+  // Responses API のテキスト抽出（output_text → output[].content[].text → fallback）
+  const outputMsg = data.output?.find(
+    (o: any) => o.type === "message" || o.role === "assistant"
+  );
+  const content: string =
+    data.output_text ??
+    outputMsg?.content?.find(
+      (c: any) => c.type === "output_text" || c.type === "text"
+    )?.text ??
+    (typeof outputMsg?.content === "string" ? outputMsg.content : "") ??
+    data.choices?.[0]?.message?.content ??
+    "";
+
+  // citations の場所はモデルによって異なる
   const citations: any[] =
-    data.citations ||
-    data.choices?.[0]?.message?.citations ||
-    [];
+    data.citations ?? outputMsg?.citations ?? [];
 
   console.log(
-    `[generator] Live Search response: contentLen=${content.length} citations=${citations.length}`
+    `[generator] Grok response: contentLen=${content.length} citations=${citations.length}`
   );
 
   const posts: LiveSearchPost[] = [];
@@ -133,7 +138,7 @@ export async function generateArticleWithLiveSearch(
   handles: string[],
   sourceHandle: string
 ): Promise<{ article: InsertArticle | null; posts: LiveSearchPost[] }> {
-  const batchHandles = handles.slice(0, 15);
+  const batchHandles = handles.slice(0, 10); // allowed_x_handles 上限 10
 
   const userContent =
     batchHandles.length === 0
