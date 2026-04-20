@@ -367,15 +367,25 @@ export async function runDeepSync(): Promise<{
 // cron スケジューラ起動
 // ─────────────────────────────────────────────
 
+// 1日2回（UTC 0:00 = JST 9:00 朝 / UTC 12:00 = JST 21:00 夜）
+const ARTICLE_SYNC_CRON = "0 0,12 * * *";
+// 深掘りは1日1回（UTC 21:00 = JST 6:00 朝）
+const DEEP_SYNC_CRON = "0 21 * * *";
+
 function getNextCronTime(cronExpr: string): string {
   const now = new Date();
-  if (cronExpr.includes("0 * * * *")) {
+  if (cronExpr === ARTICLE_SYNC_CRON) {
     const next = new Date(now);
-    next.setMinutes(0, 0, 0);
-    next.setHours(next.getHours() + 1);
+    const utcHour = next.getUTCHours();
+    // 次の 0:00 または 12:00 UTC を計算
+    if (utcHour < 12) {
+      next.setUTCHours(12, 0, 0, 0);
+    } else {
+      next.setUTCHours(24, 0, 0, 0); // 翌日 0:00
+    }
     return next.toISOString();
   }
-  if (cronExpr.includes("0 21 * * *")) {
+  if (cronExpr === DEEP_SYNC_CRON) {
     const next = new Date(now);
     next.setUTCHours(21, 0, 0, 0);
     if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
@@ -391,21 +401,22 @@ export function startScheduler() {
   }
   schedulerStarted = true;
 
-  console.log("[scheduler] 自律運用スケジューラ起動（Grok Live Search モード）");
+  console.log("[scheduler] 自律運用スケジューラ起動（1日2回 + 深掘り1回）");
 
-  cron.schedule("0 * * * *", async () => {
-    console.log("[scheduler] 毎時同期トリガー");
-    syncStatus.nextHourlyAt = getNextCronTime("0 * * * *");
+  // JST 9:00 と 21:00 の1日2回
+  cron.schedule(ARTICLE_SYNC_CRON, async () => {
+    console.log("[scheduler] 記事同期トリガー（1日2回）");
+    syncStatus.nextHourlyAt = getNextCronTime(ARTICLE_SYNC_CRON);
     try {
       await runHourlySync();
     } catch (err) {
-      console.error("[scheduler] 毎時同期失敗:", err);
+      console.error("[scheduler] 記事同期失敗:", err);
     }
   });
 
-  cron.schedule("0 21 * * *", async () => {
+  cron.schedule(DEEP_SYNC_CRON, async () => {
     console.log("[scheduler] 深掘り同期トリガー");
-    syncStatus.nextDeepAt = getNextCronTime("0 21 * * *");
+    syncStatus.nextDeepAt = getNextCronTime(DEEP_SYNC_CRON);
     try {
       await runDeepSync();
     } catch (err) {
@@ -413,9 +424,9 @@ export function startScheduler() {
     }
   });
 
-  syncStatus.nextHourlyAt = getNextCronTime("0 * * * *");
-  syncStatus.nextDeepAt = getNextCronTime("0 21 * * *");
+  syncStatus.nextHourlyAt = getNextCronTime(ARTICLE_SYNC_CRON);
+  syncStatus.nextDeepAt = getNextCronTime(DEEP_SYNC_CRON);
 
-  console.log(`[scheduler] 次回毎時同期: ${syncStatus.nextHourlyAt}`);
+  console.log(`[scheduler] 次回記事同期: ${syncStatus.nextHourlyAt}`);
   console.log(`[scheduler] 次回深掘り同期: ${syncStatus.nextDeepAt}`);
 }
