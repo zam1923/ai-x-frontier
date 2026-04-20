@@ -1,0 +1,41 @@
+name: Grok API テスト
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-grok:
+    name: Grok Live Search 疎通確認
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: /api/sync/test-grok を呼び出す
+        run: |
+          echo "## Grok API テスト結果" >> $GITHUB_STEP_SUMMARY
+          RESULT=$(curl -s --max-time 20 \
+            -X POST "${{ secrets.APP_URL }}/api/sync/test-grok")
+          echo "生レスポンス: $RESULT"
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo "$RESULT" | python3 -m json.tool >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "$RESULT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # エラー確認
+          ERROR=$(echo "$RESULT" | python3 -c "
+          import json,sys
+          try:
+            d=json.loads(sys.stdin.read())
+            print(d.get('error',''))
+          except: print('parse_error')
+          ")
+          if [ -n "$ERROR" ] && [ "$ERROR" != "None" ]; then
+            echo "::error::Grokエラー: $ERROR"
+            exit 1
+          fi
+
+      - name: 同期ログを確認
+        run: |
+          echo "## 最新同期ログ" >> $GITHUB_STEP_SUMMARY
+          LOGS=$(curl -s --max-time 20 "${{ secrets.APP_URL }}/api/sync/logs?limit=3")
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo "$LOGS" | python3 -m json.tool >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "$LOGS" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
