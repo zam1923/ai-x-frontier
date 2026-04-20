@@ -7,7 +7,6 @@ on:
     - cron: "0 12 * * *"
     # 毎日21:00 UTC (= 翌朝6:00 JST) — 深掘り更新
     - cron: "0 21 * * *"
-  # 手動実行も可能
   workflow_dispatch:
     inputs:
       sync_type:
@@ -23,39 +22,105 @@ jobs:
       github.event.schedule == '0 0 * * *' ||
       github.event.schedule == '0 12 * * *'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - name: X収集 + 記事生成トリガー
+      - name: 同期トリガー
         run: |
-          echo "記事同期トリガー（1日2回）: $(date)"
+          echo "## 記事同期トリガー: $(date)" >> $GITHUB_STEP_SUMMARY
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            --max-time 300 \
+            --max-time 60 \
             -X POST "${{ secrets.APP_URL }}/api/sync/trigger/hourly" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             -H "Content-Type: application/json")
-          echo "Response status: $STATUS"
-          # 409 = already running (OK), 200 = triggered OK
+          echo "トリガーステータス: $STATUS"
           if [ "$STATUS" != "200" ] && [ "$STATUS" != "409" ]; then
-            echo "::warning::同期APIが${STATUS}を返しました"
+            echo "::error::トリガーAPIが${STATUS}を返しました"
+            exit 1
+          fi
+
+      - name: 同期完了を待機（10分）
+        run: sleep 600
+
+      - name: 結果確認
+        run: |
+          RESULT=$(curl -s --max-time 30 "${{ secrets.APP_URL }}/api/sync/logs?limit=1")
+          echo "最新ログ: $RESULT"
+          SYNC_STATUS=$(echo "$RESULT" | python3 -c "
+          import json,sys
+          try:
+            d=json.loads(sys.stdin.read())
+            print(d[0]['status'] if d else 'no_log')
+          except: print('parse_error')
+          ")
+          DETAILS=$(echo "$RESULT" | python3 -c "
+          import json,sys
+          try:
+            d=json.loads(sys.stdin.read())
+            if d:
+              det=d[0].get('details','{}')
+              det=json.loads(det) if isinstance(det,str) else det
+              print(f\"posts={det.get('postsCollected',0)} articles={det.get('articlesGenerated',0)} errors={det.get('errors',[])}\")
+          except Exception as e: print(f'error:{e}')
+          ")
+          echo "## 同期結果" >> $GITHUB_STEP_SUMMARY
+          echo "- ステータス: **$SYNC_STATUS**" >> $GITHUB_STEP_SUMMARY
+          echo "- 詳細: $DETAILS" >> $GITHUB_STEP_SUMMARY
+          echo "結果: $SYNC_STATUS / $DETAILS"
+          if [ "$SYNC_STATUS" = "error" ]; then
+            echo "::error::同期エラー: $DETAILS"
+            exit 1
           fi
 
   daily-sync:
-    name: 毎日深掘り更新（プロフィール更新）
+    name: 毎日深掘り更新
     if: |
       github.event_name == 'workflow_dispatch' && github.event.inputs.sync_type == 'daily' ||
       github.event.schedule == '0 21 * * *'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
-      - name: エンティティ深掘り更新トリガー
+      - name: 深掘りトリガー
         run: |
-          echo "深掘り同期トリガー: $(date)"
+          echo "## 深掘り同期トリガー: $(date)" >> $GITHUB_STEP_SUMMARY
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            --max-time 300 \
+            --max-time 60 \
             -X POST "${{ secrets.APP_URL }}/api/sync/trigger/deep" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             -H "Content-Type: application/json")
-          echo "Response status: $STATUS"
+          echo "トリガーステータス: $STATUS"
           if [ "$STATUS" != "200" ] && [ "$STATUS" != "409" ]; then
-            echo "::warning::深掘り同期APIが${STATUS}を返しました"
+            echo "::error::トリガーAPIが${STATUS}を返しました"
+            exit 1
+          fi
+
+      - name: 同期完了を待機（15分）
+        run: sleep 900
+
+      - name: 結果確認
+        run: |
+          RESULT=$(curl -s --max-time 30 "${{ secrets.APP_URL }}/api/sync/logs?limit=1")
+          echo "最新ログ: $RESULT"
+          SYNC_STATUS=$(echo "$RESULT" | python3 -c "
+          import json,sys
+          try:
+            d=json.loads(sys.stdin.read())
+            print(d[0]['status'] if d else 'no_log')
+          except: print('parse_error')
+          ")
+          DETAILS=$(echo "$RESULT" | python3 -c "
+          import json,sys
+          try:
+            d=json.loads(sys.stdin.read())
+            if d:
+              det=d[0].get('details','{}')
+              det=json.loads(det) if isinstance(det,str) else det
+              print(f\"entities={det.get('entitiesUpdated',0)} errors={det.get('errors',[])}\")
+          except Exception as e: print(f'error:{e}')
+          ")
+          echo "## 深掘り同期結果" >> $GITHUB_STEP_SUMMARY
+          echo "- ステータス: **$SYNC_STATUS**" >> $GITHUB_STEP_SUMMARY
+          echo "- 詳細: $DETAILS" >> $GITHUB_STEP_SUMMARY
+          if [ "$SYNC_STATUS" = "error" ]; then
+            echo "::error::深掘り同期エラー: $DETAILS"
+            exit 1
           fi
