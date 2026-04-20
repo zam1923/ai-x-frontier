@@ -8,7 +8,7 @@ import type { InsertArticle } from "@shared/schema";
 
 // Agent Tools API エンドポイント
 const GROK_API_URL = "https://api.x.ai/v1/responses";
-const GROK_MODEL = process.env.GROK_MODEL || "grok-3-latest";
+const GROK_MODEL = process.env.GROK_MODEL || "grok-4-1-fast";
 
 // ─────────────────────────────────────────────
 // Live Search で取得したポストの型
