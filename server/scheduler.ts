@@ -1,23 +1,16 @@
 /**
  * scheduler.ts — node-cron による完全自律定期実行エンジン
- * 修正: logSync でrunning→success/errorを正しくupdateする
- *       scheduler重複起動防止（グローバルフラグ）
+ * Grok Live Search を使用（Apify不要）
  */
 
 import cron from "node-cron";
 import supabase from "./supabase";
+import { WATCHED_HANDLES, savePosts, getEntityMap } from "./collector";
 import {
-  WATCHED_HANDLES,
-  fetchPostsByHandles,
-  fetchPostsBySearch,
-  SEARCH_QUERIES,
-  savePosts,
-  getEntityMap,
-} from "./collector";
-import {
-  generateArticle,
-  updateEntityProfile,
+  generateArticleWithLiveSearch,
+  updateEntityProfileWithLiveSearch,
   updateTrendTags,
+  type LiveSearchPost,
 } from "./generator";
 
 // ─────────────────────────────────────────────
@@ -49,7 +42,6 @@ let syncStatus: SyncStatus = {
   totalRuns: 0,
 };
 
-// スケジューラが既に起動済みかどうかのフラグ（重複起動防止）
 let schedulerStarted = false;
 
 export function getSyncStatus(): SyncStatus {
@@ -57,7 +49,7 @@ export function getSyncStatus(): SyncStatus {
 }
 
 // ─────────────────────────────────────────────
-// sync_logs テーブルへの記録（insert + update）
+// sync_logs テーブルへの記録
 // ─────────────────────────────────────────────
 
 async function logSyncStart(
@@ -95,20 +87,55 @@ async function logSyncEnd(
   try {
     await supabase
       .from("sync_logs")
-      .update({
-        status,
-        details: JSON.stringify(details),
-      })
+      .update({ status, details: JSON.stringify(details) })
       .eq("id", logId);
   } catch (err) {
     console.error("[scheduler] Failed to update sync log:", err);
   }
 }
 
+// LiveSearchPost → RawPost 変換してDBに保存
+async function savePostsFromLiveSearch(
+  posts: LiveSearchPost[],
+  entityMap: Map<string, string>
+): Promise<number> {
+  let saved = 0;
+  for (const post of posts) {
+    const entityId = entityMap.get(post.author_handle);
+    if (!entityId) continue;
+    const count = await savePosts(
+      [
+        {
+          id: post.post_id,
+          text: post.text,
+          author_handle: post.author_handle,
+          author_name: post.author_handle,
+          created_at: post.published_at,
+          likes: 0,
+          retweets: 0,
+          replies: 0,
+          url: post.url,
+        },
+      ],
+      entityId
+    );
+    saved += count;
+  }
+  return saved;
+}
+
 // ─────────────────────────────────────────────
-// メイン同期処理（毎時）
-// バッチ処理: 全ハンドルをまとめてApify呼び出し
+// 毎時同期（Grok Live Search バッチ処理）
 // ─────────────────────────────────────────────
+
+// ハンドルを n 件ずつのバッチに分割
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
 
 export async function runHourlySync(): Promise<{
   postsCollected: number;
@@ -116,9 +143,7 @@ export async function runHourlySync(): Promise<{
   entitiesUpdated: number;
   errors: string[];
 }> {
-  if (syncStatus.isRunning) {
-    throw new Error("同期処理が既に実行中です");
-  }
+  if (syncStatus.isRunning) throw new Error("同期処理が既に実行中です");
 
   syncStatus.isRunning = true;
   syncStatus.lastRunType = "hourly";
@@ -132,72 +157,31 @@ export async function runHourlySync(): Promise<{
   });
 
   try {
-    console.log("[scheduler] 毎時同期開始...");
-
-    // 1. エンティティマップ取得（handle → id）
+    console.log("[scheduler] 毎時同期開始（Grok Live Search）...");
     const entityMap = await getEntityMap();
-    console.log(`[scheduler] エンティティマップ: ${entityMap.size}件`);
 
-    // 2. 全ハンドルをまとめてApify呼び出し（効率化）
-    const allPosts = await fetchPostsByHandles(WATCHED_HANDLES, 5);
-    console.log(`[scheduler] 全ポスト取得: ${allPosts.length}件`);
+    // ハンドルを8件ずつバッチ化（Grok Live Search 1回あたり）
+    const batches = chunkArray(WATCHED_HANDLES, 8);
 
-    if (allPosts.length > 0) {
-      // ハンドルごとにグループ化して保存
-      const postsByHandle = new Map<string, typeof allPosts>();
-      for (const post of allPosts) {
-        const h = post.author_handle.toLowerCase();
-        if (!postsByHandle.has(h)) postsByHandle.set(h, []);
-        postsByHandle.get(h)!.push(post);
-      }
+    for (const batch of batches) {
+      try {
+        const sourceHandle = batch[0];
+        const { article, posts } = await generateArticleWithLiveSearch(
+          batch,
+          sourceHandle
+        );
 
-      // 各ハンドルの投稿を保存 + 記事生成
-      for (const [handle, posts] of postsByHandle.entries()) {
-        try {
-          const entityId = entityMap.get(handle);
-          if (entityId) {
-            const saved = await savePosts(posts, entityId);
-            postsCollected += saved;
-            console.log(`[scheduler] @${handle}: ${saved}件保存`);
-          }
-
-          // 上位エンゲージメント投稿から記事生成
-          const topPosts = posts
-            .sort((a, b) => (b.likes + b.retweets * 2) - (a.likes + a.retweets * 2))
-            .slice(0, 5);
-
-          if (topPosts.some((p) => p.likes + p.retweets >= 5)) {
-            const article = await generateArticle(topPosts, handle);
-            if (article) {
-              const { error } = await supabase.from("articles").insert({
-                ...article,
-                tags: JSON.stringify(article.tags),
-                entity_ids: JSON.stringify(article.entity_ids),
-              });
-              if (!error) {
-                articlesGenerated++;
-                console.log(
-                  `[scheduler] @${handle}: 記事生成完了「${article.title}」`
-                );
-              } else {
-                console.error(`[scheduler] 記事保存エラー @${handle}:`, error);
-              }
-            }
-          }
-        } catch (err: any) {
-          const msg = `@${handle}: ${err.message}`;
-          errors.push(msg);
-          console.error(`[scheduler] エラー — ${msg}`);
+        // citationsから取得したポストを保存
+        if (posts.length > 0) {
+          const saved = await savePostsFromLiveSearch(posts, entityMap);
+          postsCollected += saved;
+          console.log(
+            `[scheduler] バッチ(${batch.join(",")}): ${saved}件保存`
+          );
         }
-      }
-    }
 
-    // 3. キーワード検索ポスト収集 → 記事生成
-    try {
-      const searchPosts = await fetchPostsBySearch(SEARCH_QUERIES, 5);
-      if (searchPosts.length > 0) {
-        const article = await generateArticle(searchPosts, "trending");
-        if (article) {
+        // heat_score >= 20 の記事のみ保存
+        if (article && article.heat_score >= 20) {
           const { error } = await supabase.from("articles").insert({
             ...article,
             tags: JSON.stringify(article.tags),
@@ -205,11 +189,41 @@ export async function runHourlySync(): Promise<{
           });
           if (!error) {
             articlesGenerated++;
-            postsCollected += searchPosts.length;
             console.log(
-              `[scheduler] トレンド検索: 記事生成完了「${article.title}」`
+              `[scheduler] 記事生成「${article.title}」(heat:${article.heat_score})`
             );
+          } else {
+            console.error("[scheduler] 記事保存エラー:", error);
           }
+        }
+      } catch (err: any) {
+        const msg = `バッチ(${batch[0]}...): ${err.message}`;
+        errors.push(msg);
+        console.error(`[scheduler] エラー — ${msg}`);
+      }
+    }
+
+    // トレンド検索（ハンドル指定なし → X全体を検索）
+    try {
+      const { article: trendArticle, posts: trendPosts } =
+        await generateArticleWithLiveSearch([], "trending");
+
+      if (trendPosts.length > 0) {
+        const saved = await savePostsFromLiveSearch(trendPosts, entityMap);
+        postsCollected += saved;
+      }
+
+      if (trendArticle && trendArticle.heat_score >= 20) {
+        const { error } = await supabase.from("articles").insert({
+          ...trendArticle,
+          tags: JSON.stringify(trendArticle.tags),
+          entity_ids: JSON.stringify(trendArticle.entity_ids),
+        });
+        if (!error) {
+          articlesGenerated++;
+          console.log(
+            `[scheduler] トレンド記事生成「${trendArticle.title}」`
+          );
         }
       }
     } catch (err: any) {
@@ -217,18 +231,21 @@ export async function runHourlySync(): Promise<{
       console.error("[scheduler] トレンド検索エラー:", err.message);
     }
 
-    // 4. トレンドタグ再集計
+    // トレンドタグ再集計
     try {
       const { data: recentArticles } = await supabase
         .from("articles")
-        .select("tags, title, summary, content, source_handle, source_url, published_at, heat_score, entity_ids")
+        .select(
+          "tags, title, summary, content, source_handle, source_url, published_at, heat_score, entity_ids"
+        )
         .order("published_at", { ascending: false })
         .limit(50);
 
       if (recentArticles && recentArticles.length > 0) {
         const parsed = recentArticles.map((a: any) => ({
           ...a,
-          tags: typeof a.tags === "string" ? JSON.parse(a.tags) : a.tags || [],
+          tags:
+            typeof a.tags === "string" ? JSON.parse(a.tags) : a.tags || [],
           entity_ids:
             typeof a.entity_ids === "string"
               ? JSON.parse(a.entity_ids)
@@ -263,7 +280,7 @@ export async function runHourlySync(): Promise<{
 }
 
 // ─────────────────────────────────────────────
-// 深掘り更新処理（毎朝6時）
+// 深掘り更新（毎朝6時 JST = 21:00 UTC）
 // ─────────────────────────────────────────────
 
 export async function runDeepSync(): Promise<{
@@ -272,9 +289,7 @@ export async function runDeepSync(): Promise<{
   entitiesUpdated: number;
   errors: string[];
 }> {
-  if (syncStatus.isRunning) {
-    throw new Error("同期処理が既に実行中です");
-  }
+  if (syncStatus.isRunning) throw new Error("同期処理が既に実行中です");
 
   syncStatus.isRunning = true;
   syncStatus.lastRunType = "deep";
@@ -288,28 +303,13 @@ export async function runDeepSync(): Promise<{
   });
 
   try {
-    console.log("[scheduler] 深掘り同期開始...");
+    console.log("[scheduler] 深掘り同期開始（Grok Live Search）...");
     const entityMap = await getEntityMap();
-
-    // バッチで全ハンドルを取得
-    const allPosts = await fetchPostsByHandles(WATCHED_HANDLES, 10);
-    const postsByHandle = new Map<string, typeof allPosts>();
-    for (const post of allPosts) {
-      const h = post.author_handle.toLowerCase();
-      if (!postsByHandle.has(h)) postsByHandle.set(h, []);
-      postsByHandle.get(h)!.push(post);
-    }
 
     for (const handle of WATCHED_HANDLES) {
       try {
-        const posts = postsByHandle.get(handle.toLowerCase()) || [];
-        if (posts.length === 0) continue;
-
         const entityId = entityMap.get(handle.toLowerCase());
         if (!entityId) continue;
-
-        const saved = await savePosts(posts, entityId);
-        postsCollected += saved;
 
         const { data: entity } = await supabase
           .from("entities")
@@ -318,12 +318,18 @@ export async function runDeepSync(): Promise<{
           .single();
 
         const entityName = entity?.name || handle;
-        const updated = await updateEntityProfile(
+
+        const { updated, posts } = await updateEntityProfileWithLiveSearch(
           entityId,
           entityName,
-          handle,
-          posts
+          handle
         );
+
+        if (posts.length > 0) {
+          const saved = await savePostsFromLiveSearch(posts, entityMap);
+          postsCollected += saved;
+        }
+
         if (updated) {
           entitiesUpdated++;
           console.log(`[scheduler] @${handle}: プロフィール更新完了`);
@@ -358,18 +364,28 @@ export async function runDeepSync(): Promise<{
 }
 
 // ─────────────────────────────────────────────
-// cron スケジューラ起動（重複起動防止付き）
+// cron スケジューラ起動
 // ─────────────────────────────────────────────
+
+// 1日2回（UTC 0:00 = JST 9:00 朝 / UTC 12:00 = JST 21:00 夜）
+const ARTICLE_SYNC_CRON = "0 0,12 * * *";
+// 深掘りは1日1回（UTC 21:00 = JST 6:00 朝）
+const DEEP_SYNC_CRON = "0 21 * * *";
 
 function getNextCronTime(cronExpr: string): string {
   const now = new Date();
-  if (cronExpr.includes("0 * * * *")) {
+  if (cronExpr === ARTICLE_SYNC_CRON) {
     const next = new Date(now);
-    next.setMinutes(0, 0, 0);
-    next.setHours(next.getHours() + 1);
+    const utcHour = next.getUTCHours();
+    // 次の 0:00 または 12:00 UTC を計算
+    if (utcHour < 12) {
+      next.setUTCHours(12, 0, 0, 0);
+    } else {
+      next.setUTCHours(24, 0, 0, 0); // 翌日 0:00
+    }
     return next.toISOString();
   }
-  if (cronExpr.includes("0 21 * * *")) {
+  if (cronExpr === DEEP_SYNC_CRON) {
     const next = new Date(now);
     next.setUTCHours(21, 0, 0, 0);
     if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
@@ -385,23 +401,22 @@ export function startScheduler() {
   }
   schedulerStarted = true;
 
-  console.log("[scheduler] 自律運用スケジューラ起動");
+  console.log("[scheduler] 自律運用スケジューラ起動（1日2回 + 深掘り1回）");
 
-  // 毎時0分: X収集 + 記事生成
-  cron.schedule("0 * * * *", async () => {
-    console.log("[scheduler] 毎時同期トリガー");
-    syncStatus.nextHourlyAt = getNextCronTime("0 * * * *");
+  // JST 9:00 と 21:00 の1日2回
+  cron.schedule(ARTICLE_SYNC_CRON, async () => {
+    console.log("[scheduler] 記事同期トリガー（1日2回）");
+    syncStatus.nextHourlyAt = getNextCronTime(ARTICLE_SYNC_CRON);
     try {
       await runHourlySync();
     } catch (err) {
-      console.error("[scheduler] 毎時同期失敗:", err);
+      console.error("[scheduler] 記事同期失敗:", err);
     }
   });
 
-  // 毎朝6時 JST (= 21:00 UTC): 深掘りプロフィール更新
-  cron.schedule("0 21 * * *", async () => {
+  cron.schedule(DEEP_SYNC_CRON, async () => {
     console.log("[scheduler] 深掘り同期トリガー");
-    syncStatus.nextDeepAt = getNextCronTime("0 21 * * *");
+    syncStatus.nextDeepAt = getNextCronTime(DEEP_SYNC_CRON);
     try {
       await runDeepSync();
     } catch (err) {
@@ -409,13 +424,9 @@ export function startScheduler() {
     }
   });
 
-  syncStatus.nextHourlyAt = getNextCronTime("0 * * * *");
-  syncStatus.nextDeepAt = getNextCronTime("0 6 * * *");
+  syncStatus.nextHourlyAt = getNextCronTime(ARTICLE_SYNC_CRON);
+  syncStatus.nextDeepAt = getNextCronTime(DEEP_SYNC_CRON);
 
-  console.log(`[scheduler] 次回毎時同期: ${syncStatus.nextHourlyAt}`);
+  console.log(`[scheduler] 次回記事同期: ${syncStatus.nextHourlyAt}`);
   console.log(`[scheduler] 次回深掘り同期: ${syncStatus.nextDeepAt}`);
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
