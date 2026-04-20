@@ -5,7 +5,7 @@
 
 import supabase from "./supabase";
 
-// 監視対象アカウント一覧
+// 監視対象アカウント一覧（世界的に著名なAI研究者・企業家・企業のみ）
 export const WATCHED_HANDLES = [
   // 研究者
   "karpathy",       // Andrej Karpathy
@@ -16,7 +16,6 @@ export const WATCHED_HANDLES = [
   "ilyasut",        // Ilya Sutskever
   "drfeifei",       // Fei-Fei Li
   "pirroh",         // Pieter Abbeel
-  "GoogleDeepMind",
   // 企業家
   "sama",           // Sam Altman
   "demishassabis",  // Demis Hassabis
@@ -26,16 +25,13 @@ export const WATCHED_HANDLES = [
   // 企業公式
   "AnthropicAI",
   "OpenAI",
+  "GoogleDeepMind",
   "xai",
   "MistralAI",
   "MetaAI",
   "NVIDIAAIDev",
   "huggingface",
   "LangChainAI",
-  // 日本語AI情報
-  "hillbig",        // 岡崎直観
-  "shota_imai",     // 今井翔太
-  "yoheinakajima",  // 中島洋
 ];
 
 export interface RawPost {
