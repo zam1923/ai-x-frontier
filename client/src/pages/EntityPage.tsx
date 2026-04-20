@@ -65,6 +65,7 @@ function PostCard({ post }: { post: XPost }) {
   const ago = (() => {
     const diff = Date.now() - new Date(post.posted_at).getTime();
     const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "たった今";
     if (mins < 60) return `${mins}分前`;
     const hrs = Math.floor(mins / 60);
     if (hrs < 24) return `${hrs}時間前`;
@@ -72,22 +73,27 @@ function PostCard({ post }: { post: XPost }) {
   })();
 
   return (
-    <div data-testid={`post-${post.id}`} className="glass-panel rounded-lg p-4 space-y-2">
+    <div data-testid={`post-${post.id}`} className="glass-panel rounded-lg p-4 space-y-3 hover:border-neon-cyan/30 transition-colors">
       <p className="text-sm leading-relaxed">{post.text}</p>
-      <div className="flex items-center justify-between pt-1">
+      <div className="flex items-center justify-between pt-0.5 border-t border-border/30">
         <div className="flex items-center gap-3 text-[11px] text-muted-foreground font-mono">
-          <span>♥ {post.likes.toLocaleString()}</span>
-          <span>↺ {post.retweets.toLocaleString()}</span>
-          <span>💬 {post.replies.toLocaleString()}</span>
+          <span className="flex items-center gap-1">❤ {post.likes.toLocaleString()}</span>
+          <span className="flex items-center gap-1">🔁 {post.retweets.toLocaleString()}</span>
+          <span className="flex items-center gap-1">💬 {post.replies.toLocaleString()}</span>
+          <span className="text-muted-foreground/50">· {ago}</span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-muted-foreground font-mono">{ago}</span>
-          {post.url && (
-            <a href={post.url} target="_blank" rel="noopener noreferrer" className="text-neon-cyan hover:opacity-70 transition-opacity">
-              <ExternalLink size={10} />
-            </a>
-          )}
-        </div>
+        {post.url && (
+          <a
+            href={post.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-neon-cyan/10 border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/20 transition-colors text-[10px] font-mono font-bold"
+          >
+            <Twitter size={9} />
+            Xで見る
+            <ExternalLink size={8} />
+          </a>
+        )}
       </div>
     </div>
   );

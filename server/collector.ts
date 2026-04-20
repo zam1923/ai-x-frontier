@@ -1,6 +1,6 @@
 /**
  * collector.ts — Apify経由でXの投稿を自動収集するエンジン
- * 監視対象アカウントを定期的にスキャンし、新着ポストをSupabaseに保存する
+ * まとめて取得して効率化、エラーハンドリング強化
  */
 
 import { ApifyClient } from "apify-client";
@@ -8,25 +8,46 @@ import supabase from "./supabase";
 
 const client = new ApifyClient({ token: process.env.APIFY_API_TOKEN });
 
-// 監視対象アカウント一覧
+// 監視対象アカウント一覧（大幅拡充）
 export const WATCHED_HANDLES = [
   // 研究者
-  "karpathy", "ylecun", "goodfellow_ian", "hardmaru",
+  "karpathy",      // Andrej Karpathy
+  "ylecun",        // Yann LeCun
+  "goodfellow_ian",// Ian Goodfellow
+  "hardmaru",      // David Ha
+  "fchollet",      // François Chollet
+  "ilyasut",       // Ilya Sutskever
+  "drfeifei",      // Fei-Fei Li
+  "pirroh",        // Pieter Abbeel
+  "GoogleDeepMind",
   // 企業家
-  "sama", "demishassabis",
+  "sama",          // Sam Altman
+  "demishassabis", // Demis Hassabis
+  "elonmusk",      // Elon Musk
+  "gdb",           // Greg Brockman
+  "drjimfan",      // Jim Fan (NVIDIA)
   // 企業公式
-  "AnthropicAI", "OpenAI", "GoogleDeepMind", "xai", "MistralAI",
+  "AnthropicAI",
+  "OpenAI",
+  "xai",
+  "MistralAI",
+  "MetaAI",
+  "NVIDIAAIDev",
+  "huggingface",
+  "LangChainAI",
   // 日本語AI情報
-  "hillbig", "shota_imai",
+  "hillbig",       // 岡崎直観
+  "shota_imai",    // 今井翔太
+  "yoheinakajima", // 中島洋
 ];
 
 // 注目キーワード検索クエリ
 export const SEARCH_QUERIES = [
+  "AI model release 2026",
   "LLM breakthrough",
-  "AI model release",
-  "AGI research",
-  "new AI paper",
-  "GPT Claude Gemini Grok",
+  "AGI research latest",
+  "new AI paper arxiv",
+  "Claude GPT Gemini Grok update",
 ];
 
 export interface RawPost {
@@ -42,40 +63,66 @@ export interface RawPost {
 }
 
 /**
- * Apify twitter-scraper で特定アカウントの最新ツイートを取得
+ * Apify tweet-scraper で複数アカウントのツイートを一括取得
+ * 1アカウントずつではなく、まとめて取得して効率化
  */
 export async function fetchPostsByHandles(
   handles: string[],
-  maxPerHandle = 10
+  maxPerHandle = 5
 ): Promise<RawPost[]> {
   if (!process.env.APIFY_API_TOKEN) {
     console.warn("[collector] APIFY_API_TOKEN not set — skipping");
     return [];
   }
+  if (handles.length === 0) return [];
+
+  console.log(`[collector] Apify呼び出し: ${handles.join(", ")} (各最大${maxPerHandle}件)`);
 
   try {
-    const run = await client.actor("apidojo/tweet-scraper").call({
-      twitterHandles: handles,
-      maxItems: handles.length * maxPerHandle,
-      sort: "Latest",
-      tweetLanguage: "en",
-    });
+    const run = await client.actor("apidojo/tweet-scraper").call(
+      {
+        twitterHandles: handles,
+        maxItems: handles.length * maxPerHandle,
+        sort: "Latest",
+        tweetLanguage: "en",
+        addUserInfo: true,
+      },
+      { waitSecs: 120 }
+    );
 
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    console.log(`[collector] Apify取得: ${items.length}件`);
 
-    return items.map((item: any) => ({
-      id: item.id || item.tweet_id || String(Math.random()),
-      text: item.text || item.full_text || "",
-      author_handle: item.author?.userName || item.user?.screen_name || "",
-      author_name: item.author?.name || item.user?.name || "",
-      created_at: item.createdAt || item.created_at || new Date().toISOString(),
-      likes: item.likeCount || item.favorite_count || 0,
-      retweets: item.retweetCount || item.retweet_count || 0,
-      replies: item.replyCount || item.reply_count || 0,
-      url: item.url || `https://x.com/${item.author?.userName}/status/${item.id}`,
-    })).filter((p: RawPost) => p.text.length > 20);
-  } catch (err) {
-    console.error("[collector] Apify error:", err);
+    return items
+      .map((item: any) => {
+        const handle =
+          item.author?.userName ||
+          item.user?.screen_name ||
+          item.username ||
+          "";
+        const tweetId = item.id || item.tweet_id || item.rest_id || String(Math.random());
+        const tweetUrl =
+          item.url ||
+          item.permanentUrl ||
+          (handle && tweetId
+            ? `https://x.com/${handle}/status/${tweetId}`
+            : "");
+        return {
+          id: tweetId,
+          text: item.text || item.full_text || item.rawContent || "",
+          author_handle: handle,
+          author_name: item.author?.name || item.user?.name || handle,
+          created_at:
+            item.createdAt || item.created_at || new Date().toISOString(),
+          likes: item.likeCount || item.favorite_count || 0,
+          retweets: item.retweetCount || item.retweet_count || 0,
+          replies: item.replyCount || item.reply_count || 0,
+          url: tweetUrl,
+        } as RawPost;
+      })
+      .filter((p: RawPost) => p.text.length > 20);
+  } catch (err: any) {
+    console.error("[collector] Apify handlesFetch error:", err?.message || err);
     return [];
   }
 }
@@ -85,38 +132,52 @@ export async function fetchPostsByHandles(
  */
 export async function fetchPostsBySearch(
   queries: string[],
-  maxPerQuery = 20
+  maxPerQuery = 10
 ): Promise<RawPost[]> {
   if (!process.env.APIFY_API_TOKEN) {
     console.warn("[collector] APIFY_API_TOKEN not set — skipping");
     return [];
   }
 
+  console.log(`[collector] Apify検索: ${queries.join(" / ")}`);
+
   try {
-    const run = await client.actor("apidojo/tweet-scraper").call({
-      searchTerms: queries,
-      maxItems: queries.length * maxPerQuery,
-      sort: "Latest",
-      tweetLanguage: "en",
-      onlyVerifiedUsers: false,
-      minimumFavorites: 10,
-    });
+    const run = await client.actor("apidojo/tweet-scraper").call(
+      {
+        searchTerms: queries,
+        maxItems: queries.length * maxPerQuery,
+        sort: "Latest",
+        tweetLanguage: "en",
+        minimumFavorites: 20,
+      },
+      { waitSecs: 120 }
+    );
 
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    console.log(`[collector] Apify検索取得: ${items.length}件`);
 
-    return items.map((item: any) => ({
-      id: item.id || String(Math.random()),
-      text: item.text || item.full_text || "",
-      author_handle: item.author?.userName || "",
-      author_name: item.author?.name || "",
-      created_at: item.createdAt || new Date().toISOString(),
-      likes: item.likeCount || 0,
-      retweets: item.retweetCount || 0,
-      replies: item.replyCount || 0,
-      url: item.url || "",
-    })).filter((p: RawPost) => p.text.length > 30);
-  } catch (err) {
-    console.error("[collector] search error:", err);
+    return items
+      .map((item: any) => {
+        const handle = item.author?.userName || item.user?.screen_name || "";
+        const tweetId = item.id || item.tweet_id || String(Math.random());
+        return {
+          id: tweetId,
+          text: item.text || item.full_text || "",
+          author_handle: handle,
+          author_name: item.author?.name || handle,
+          created_at: item.createdAt || new Date().toISOString(),
+          likes: item.likeCount || 0,
+          retweets: item.retweetCount || 0,
+          replies: item.replyCount || 0,
+          url:
+            item.url ||
+            item.permanentUrl ||
+            `https://x.com/${handle}/status/${tweetId}`,
+        } as RawPost;
+      })
+      .filter((p: RawPost) => p.text.length > 30);
+  } catch (err: any) {
+    console.error("[collector] Apify search error:", err?.message || err);
     return [];
   }
 }

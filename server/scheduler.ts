@@ -1,9 +1,7 @@
 /**
  * scheduler.ts — node-cron による完全自律定期実行エンジン
- *
- * スケジュール:
- *   毎時0分  → hourlySync: 全アカウントのXポスト収集 + 記事生成
- *   毎朝6時  → deepSync: 全エンティティのプロフィール深掘り更新
+ * 修正: logSync でrunning→success/errorを正しくupdateする
+ *       scheduler重複起動防止（グローバルフラグ）
  */
 
 import cron from "node-cron";
@@ -51,33 +49,65 @@ let syncStatus: SyncStatus = {
   totalRuns: 0,
 };
 
+// スケジューラが既に起動済みかどうかのフラグ（重複起動防止）
+let schedulerStarted = false;
+
 export function getSyncStatus(): SyncStatus {
   return { ...syncStatus };
 }
 
 // ─────────────────────────────────────────────
-// sync_logs テーブルへの記録
+// sync_logs テーブルへの記録（insert + update）
 // ─────────────────────────────────────────────
 
-async function logSync(
+async function logSyncStart(
   type: string,
-  status: "success" | "error" | "running",
+  details: Record<string, any>
+): Promise<string | null> {
+  try {
+    const { data, error } = await supabase
+      .from("sync_logs")
+      .insert({
+        sync_type: type,
+        status: "running",
+        details: JSON.stringify(details),
+        ran_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single();
+    if (error) {
+      console.error("[scheduler] logSyncStart error:", error);
+      return null;
+    }
+    return data?.id || null;
+  } catch (err) {
+    console.error("[scheduler] Failed to write sync log start:", err);
+    return null;
+  }
+}
+
+async function logSyncEnd(
+  logId: string | null,
+  status: "success" | "error",
   details: Record<string, any>
 ) {
+  if (!logId) return;
   try {
-    await supabase.from("sync_logs").insert({
-      sync_type: type,
-      status,
-      details: JSON.stringify(details),
-      ran_at: new Date().toISOString(),
-    });
+    await supabase
+      .from("sync_logs")
+      .update({
+        status,
+        details: JSON.stringify(details),
+      })
+      .eq("id", logId);
   } catch (err) {
-    console.error("[scheduler] Failed to write sync log:", err);
+    console.error("[scheduler] Failed to update sync log:", err);
   }
 }
 
 // ─────────────────────────────────────────────
 // メイン同期処理（毎時）
+// バッチ処理: 全ハンドルをまとめてApify呼び出し
 // ─────────────────────────────────────────────
 
 export async function runHourlySync(): Promise<{
@@ -97,7 +127,9 @@ export async function runHourlySync(): Promise<{
   let articlesGenerated = 0;
   const entitiesUpdated = 0;
 
-  await logSync("hourly", "running", { started_at: new Date().toISOString() });
+  const logId = await logSyncStart("hourly", {
+    started_at: new Date().toISOString(),
+  });
 
   try {
     console.log("[scheduler] 毎時同期開始...");
@@ -106,48 +138,63 @@ export async function runHourlySync(): Promise<{
     const entityMap = await getEntityMap();
     console.log(`[scheduler] エンティティマップ: ${entityMap.size}件`);
 
-    // 2. アカウントごとにポスト収集・記事生成
-    for (const handle of WATCHED_HANDLES) {
-      try {
-        const posts = await fetchPostsByHandles([handle], 10);
-        if (posts.length === 0) {
-          console.log(`[scheduler] @${handle}: ポストなし`);
-          continue;
-        }
+    // 2. 全ハンドルをまとめてApify呼び出し（効率化）
+    const allPosts = await fetchPostsByHandles(WATCHED_HANDLES, 5);
+    console.log(`[scheduler] 全ポスト取得: ${allPosts.length}件`);
 
-        const entityId = entityMap.get(handle.toLowerCase());
-        if (entityId) {
-          const saved = await savePosts(posts, entityId);
-          postsCollected += saved;
-          console.log(`[scheduler] @${handle}: ${saved}件保存`);
-        }
+    if (allPosts.length > 0) {
+      // ハンドルごとにグループ化して保存
+      const postsByHandle = new Map<string, typeof allPosts>();
+      for (const post of allPosts) {
+        const h = post.author_handle.toLowerCase();
+        if (!postsByHandle.has(h)) postsByHandle.set(h, []);
+        postsByHandle.get(h)!.push(post);
+      }
 
-        // Grokで記事生成
-        const article = await generateArticle(posts, handle);
-        if (article) {
-          const { error } = await supabase.from("articles").insert({
-            ...article,
-            tags: JSON.stringify(article.tags),
-            entity_ids: JSON.stringify(article.entity_ids),
-          });
-          if (!error) {
-            articlesGenerated++;
-            console.log(`[scheduler] @${handle}: 記事生成完了「${article.title}」`);
+      // 各ハンドルの投稿を保存 + 記事生成
+      for (const [handle, posts] of postsByHandle.entries()) {
+        try {
+          const entityId = entityMap.get(handle);
+          if (entityId) {
+            const saved = await savePosts(posts, entityId);
+            postsCollected += saved;
+            console.log(`[scheduler] @${handle}: ${saved}件保存`);
           }
-        }
 
-        // レート制限対策（Apify APIへの過負荷を避ける）
-        await sleep(2000);
-      } catch (err: any) {
-        const msg = `@${handle}: ${err.message}`;
-        errors.push(msg);
-        console.error(`[scheduler] エラー — ${msg}`);
+          // 上位エンゲージメント投稿から記事生成
+          const topPosts = posts
+            .sort((a, b) => (b.likes + b.retweets * 2) - (a.likes + a.retweets * 2))
+            .slice(0, 5);
+
+          if (topPosts.some((p) => p.likes + p.retweets >= 5)) {
+            const article = await generateArticle(topPosts, handle);
+            if (article) {
+              const { error } = await supabase.from("articles").insert({
+                ...article,
+                tags: JSON.stringify(article.tags),
+                entity_ids: JSON.stringify(article.entity_ids),
+              });
+              if (!error) {
+                articlesGenerated++;
+                console.log(
+                  `[scheduler] @${handle}: 記事生成完了「${article.title}」`
+                );
+              } else {
+                console.error(`[scheduler] 記事保存エラー @${handle}:`, error);
+              }
+            }
+          }
+        } catch (err: any) {
+          const msg = `@${handle}: ${err.message}`;
+          errors.push(msg);
+          console.error(`[scheduler] エラー — ${msg}`);
+        }
       }
     }
 
-    // 3. キーワード検索ポスト収集
+    // 3. キーワード検索ポスト収集 → 記事生成
     try {
-      const searchPosts = await fetchPostsBySearch(SEARCH_QUERIES, 10);
+      const searchPosts = await fetchPostsBySearch(SEARCH_QUERIES, 5);
       if (searchPosts.length > 0) {
         const article = await generateArticle(searchPosts, "trending");
         if (article) {
@@ -159,19 +206,22 @@ export async function runHourlySync(): Promise<{
           if (!error) {
             articlesGenerated++;
             postsCollected += searchPosts.length;
-            console.log(`[scheduler] トレンド検索: 記事生成完了「${article.title}」`);
+            console.log(
+              `[scheduler] トレンド検索: 記事生成完了「${article.title}」`
+            );
           }
         }
       }
     } catch (err: any) {
       errors.push(`トレンド検索: ${err.message}`);
+      console.error("[scheduler] トレンド検索エラー:", err.message);
     }
 
     // 4. トレンドタグ再集計
     try {
       const { data: recentArticles } = await supabase
         .from("articles")
-        .select("tags")
+        .select("tags, title, summary, content, source_handle, source_url, published_at, heat_score, entity_ids")
         .order("published_at", { ascending: false })
         .limit(50);
 
@@ -179,14 +229,10 @@ export async function runHourlySync(): Promise<{
         const parsed = recentArticles.map((a: any) => ({
           ...a,
           tags: typeof a.tags === "string" ? JSON.parse(a.tags) : a.tags || [],
-          entity_ids: [],
-          title: "",
-          summary: "",
-          content: "",
-          source_handle: "",
-          source_url: "",
-          published_at: "",
-          heat_score: 0,
+          entity_ids:
+            typeof a.entity_ids === "string"
+              ? JSON.parse(a.entity_ids)
+              : a.entity_ids || [],
         }));
         await updateTrendTags(parsed);
       }
@@ -199,15 +245,17 @@ export async function runHourlySync(): Promise<{
     syncStatus.lastRunAt = new Date().toISOString();
     syncStatus.totalRuns++;
 
-    await logSync("hourly", "success", result);
-    console.log(`[scheduler] 毎時同期完了: ポスト${postsCollected}件, 記事${articlesGenerated}件`);
+    await logSyncEnd(logId, "success", result);
+    console.log(
+      `[scheduler] 毎時同期完了: ポスト${postsCollected}件, 記事${articlesGenerated}件`
+    );
     return result;
   } catch (err: any) {
     errors.push(`致命的エラー: ${err.message}`);
     const result = { postsCollected, articlesGenerated, entitiesUpdated, errors };
     syncStatus.lastResult = result;
     syncStatus.lastRunAt = new Date().toISOString();
-    await logSync("hourly", "error", result);
+    await logSyncEnd(logId, "error", result);
     throw err;
   } finally {
     syncStatus.isRunning = false;
@@ -235,26 +283,34 @@ export async function runDeepSync(): Promise<{
   const articlesGenerated = 0;
   let entitiesUpdated = 0;
 
-  await logSync("deep", "running", { started_at: new Date().toISOString() });
+  const logId = await logSyncStart("deep", {
+    started_at: new Date().toISOString(),
+  });
 
   try {
     console.log("[scheduler] 深掘り同期開始...");
     const entityMap = await getEntityMap();
 
-    // 全エンティティのプロフィール深掘り更新
+    // バッチで全ハンドルを取得
+    const allPosts = await fetchPostsByHandles(WATCHED_HANDLES, 10);
+    const postsByHandle = new Map<string, typeof allPosts>();
+    for (const post of allPosts) {
+      const h = post.author_handle.toLowerCase();
+      if (!postsByHandle.has(h)) postsByHandle.set(h, []);
+      postsByHandle.get(h)!.push(post);
+    }
+
     for (const handle of WATCHED_HANDLES) {
       try {
-        const posts = await fetchPostsByHandles([handle], 15);
+        const posts = postsByHandle.get(handle.toLowerCase()) || [];
         if (posts.length === 0) continue;
 
         const entityId = entityMap.get(handle.toLowerCase());
         if (!entityId) continue;
 
-        // ポスト保存
         const saved = await savePosts(posts, entityId);
         postsCollected += saved;
 
-        // エンティティ名取得
         const { data: entity } = await supabase
           .from("entities")
           .select("name")
@@ -262,15 +318,16 @@ export async function runDeepSync(): Promise<{
           .single();
 
         const entityName = entity?.name || handle;
-
-        // プロフィール深掘り更新
-        const updated = await updateEntityProfile(entityId, entityName, handle, posts);
+        const updated = await updateEntityProfile(
+          entityId,
+          entityName,
+          handle,
+          posts
+        );
         if (updated) {
           entitiesUpdated++;
           console.log(`[scheduler] @${handle}: プロフィール更新完了`);
         }
-
-        await sleep(3000);
       } catch (err: any) {
         const msg = `深掘り @${handle}: ${err.message}`;
         errors.push(msg);
@@ -284,14 +341,16 @@ export async function runDeepSync(): Promise<{
     syncStatus.lastRunType = "deep";
     syncStatus.totalRuns++;
 
-    await logSync("deep", "success", result);
-    console.log(`[scheduler] 深掘り同期完了: エンティティ${entitiesUpdated}件更新`);
+    await logSyncEnd(logId, "success", result);
+    console.log(
+      `[scheduler] 深掘り同期完了: エンティティ${entitiesUpdated}件更新`
+    );
     return result;
   } catch (err: any) {
     errors.push(`致命的エラー: ${err.message}`);
     const result = { postsCollected, articlesGenerated, entitiesUpdated, errors };
     syncStatus.lastResult = result;
-    await logSync("deep", "error", result);
+    await logSyncEnd(logId, "error", result);
     throw err;
   } finally {
     syncStatus.isRunning = false;
@@ -299,21 +358,18 @@ export async function runDeepSync(): Promise<{
 }
 
 // ─────────────────────────────────────────────
-// cron スケジューラ起動
+// cron スケジューラ起動（重複起動防止付き）
 // ─────────────────────────────────────────────
 
 function getNextCronTime(cronExpr: string): string {
-  // 次回実行時刻の概算（cronライブラリのnextDate相当）
   const now = new Date();
   if (cronExpr.includes("0 * * * *")) {
-    // 毎時0分
     const next = new Date(now);
     next.setMinutes(0, 0, 0);
     next.setHours(next.getHours() + 1);
     return next.toISOString();
   }
   if (cronExpr.includes("0 6 * * *")) {
-    // 毎朝6時
     const next = new Date(now);
     next.setHours(6, 0, 0, 0);
     if (next <= now) next.setDate(next.getDate() + 1);
@@ -323,6 +379,12 @@ function getNextCronTime(cronExpr: string): string {
 }
 
 export function startScheduler() {
+  if (schedulerStarted) {
+    console.log("[scheduler] スケジューラは既に起動中 — スキップ");
+    return;
+  }
+  schedulerStarted = true;
+
   console.log("[scheduler] 自律運用スケジューラ起動");
 
   // 毎時0分: X収集 + 記事生成
@@ -336,8 +398,8 @@ export function startScheduler() {
     }
   });
 
-  // 毎朝6時: 深掘りプロフィール更新
-  cron.schedule("0 6 * * *", async () => {
+  // 毎朝6時 JST (= 21:00 UTC): 深掘りプロフィール更新
+  cron.schedule("0 21 * * *", async () => {
     console.log("[scheduler] 深掘り同期トリガー");
     syncStatus.nextDeepAt = getNextCronTime("0 6 * * *");
     try {
@@ -347,17 +409,12 @@ export function startScheduler() {
     }
   });
 
-  // 次回実行時刻を初期設定
   syncStatus.nextHourlyAt = getNextCronTime("0 * * * *");
   syncStatus.nextDeepAt = getNextCronTime("0 6 * * *");
 
   console.log(`[scheduler] 次回毎時同期: ${syncStatus.nextHourlyAt}`);
   console.log(`[scheduler] 次回深掘り同期: ${syncStatus.nextDeepAt}`);
 }
-
-// ─────────────────────────────────────────────
-// ユーティリティ
-// ─────────────────────────────────────────────
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));

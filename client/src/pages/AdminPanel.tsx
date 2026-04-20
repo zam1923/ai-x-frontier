@@ -156,12 +156,27 @@ export default function AdminPanel() {
     refetchInterval: 5000,
   });
 
-  // ログ取得（30秒ごと）
-  const { data: logs } = useQuery<SyncLog[]>({
+  // ログ取得（10秒ごと、running中は5秒）
+  const { data: rawLogs } = useQuery<SyncLog[]>({
     queryKey: ["/api/sync/logs"],
-    queryFn: () => apiRequest("GET", "/api/sync/logs?limit=20").then(r => r.json()),
-    refetchInterval: 30000,
+    queryFn: () => apiRequest("GET", "/api/sync/logs?limit=30").then(r => r.json()),
+    refetchInterval: status?.isRunning ? 5000 : 10000,
   });
+  // running状態のログは最新1件のみ残す（重複した「実行中」を除去）
+  const logs = (() => {
+    if (!rawLogs) return [];
+    const seen = new Set<string>();
+    const result: SyncLog[] = [];
+    let runningShown = false;
+    for (const log of rawLogs) {
+      if (log.status === "running") {
+        if (!runningShown) { result.push(log); runningShown = true; }
+      } else {
+        result.push(log);
+      }
+    }
+    return result;
+  })();
 
   // 手動トリガー
   const triggerMutation = useMutation({
