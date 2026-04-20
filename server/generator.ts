@@ -25,6 +25,20 @@ export interface LiveSearchPost {
 // Grok Live Search 付き API 呼び出し（共通）
 // ─────────────────────────────────────────────
 
+// Live Search はテキスト中に JSON を埋め込むことがあるため、正規表現でも抽出を試みる
+function extractJSON(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch {}
+  const match = text.match(/\{[\s\S]*\}/);
+  if (match) {
+    try {
+      return JSON.parse(match[0]);
+    } catch {}
+  }
+  return null;
+}
+
 async function callGrokWithLiveSearch(
   systemPrompt: string,
   userContent: string,
@@ -51,9 +65,9 @@ async function callGrokWithLiveSearch(
         { role: "system", content: systemPrompt },
         { role: "user", content: userContent },
       ],
-      temperature: 0.75,
-      max_tokens: 1500,
-      response_format: { type: "json_object" },
+      temperature: 0.7,
+      max_tokens: 2000,
+      // response_format は Live Search と併用不可のため省略
       search_parameters: {
         mode: "on",
         sources: [source],
@@ -68,11 +82,19 @@ async function callGrokWithLiveSearch(
   }
 
   const data = await res.json();
-  const content = data.choices[0].message.content;
+  const content: string = data.choices?.[0]?.message?.content ?? "";
 
-  // citations から X ポストを抽出
+  // citations は root または message 内にある場合がある
+  const citations: any[] =
+    data.citations ||
+    data.choices?.[0]?.message?.citations ||
+    [];
+
+  console.log(
+    `[generator] Live Search response: contentLen=${content.length} citations=${citations.length}`
+  );
+
   const posts: LiveSearchPost[] = [];
-  const citations: any[] = data.citations || [];
   for (const c of citations) {
     const url = c.url || "";
     const match = url.match(/x\.com\/([^/]+)\/status\/(\d+)/);
@@ -80,9 +102,9 @@ async function callGrokWithLiveSearch(
       posts.push({
         post_id: match[2],
         author_handle: match[1].toLowerCase(),
-        text: c.content || c.text || "",
+        text: c.content || c.text || c.snippet || "",
         url,
-        published_at: c.published_date || new Date().toISOString(),
+        published_at: c.published_date || c.date || new Date().toISOString(),
       });
     }
   }
@@ -128,7 +150,11 @@ export async function generateArticleWithLiveSearch(
       Math.max(15, batchHandles.length * 3)
     );
 
-    const parsed = JSON.parse(content);
+    const parsed = extractJSON(content);
+    if (!parsed) {
+      console.error("[generator] JSON parse failed, content preview:", content.slice(0, 200));
+      return { article: null, posts };
+    }
     const heatScore = Math.min(100, Math.max(0, Number(parsed.heat_score) || 50));
 
     return {
@@ -181,7 +207,11 @@ export async function updateEntityProfileWithLiveSearch(
       15
     );
 
-    const parsed = JSON.parse(content);
+    const parsed = extractJSON(content);
+    if (!parsed) {
+      console.error("[generator] entity JSON parse failed, content preview:", content.slice(0, 200));
+      return { updated: false, posts };
+    }
 
     const { data: existing } = await supabase
       .from("entities")
