@@ -8,20 +8,24 @@ import supabase from "./supabase";
 // 監視対象アカウント一覧（世界的に著名なAI研究者・企業家・企業のみ）
 export const WATCHED_HANDLES = [
   // 研究者
-  "karpathy",       // Andrej Karpathy
-  "ylecun",         // Yann LeCun
-  "goodfellow_ian", // Ian Goodfellow
-  "hardmaru",       // David Ha
-  "fchollet",       // François Chollet
-  "ilyasut",        // Ilya Sutskever
-  "drfeifei",       // Fei-Fei Li
-  "pirroh",         // Pieter Abbeel
+  "karpathy",         // Andrej Karpathy
+  "ylecun",           // Yann LeCun
+  "goodfellow_ian",   // Ian Goodfellow
+  "hardmaru",         // David Ha
+  "fchollet",         // François Chollet
+  "ilyasut",          // Ilya Sutskever
+  "drfeifei",         // Fei-Fei Li
+  "pirroh",           // Pieter Abbeel
+  "geoffreyhinton",   // Geoffrey Hinton
+  "yoshuabengio",     // Yoshua Bengio
   // 企業家
-  "sama",           // Sam Altman
-  "demishassabis",  // Demis Hassabis
-  "elonmusk",       // Elon Musk
-  "gdb",            // Greg Brockman
-  "drjimfan",       // Jim Fan (NVIDIA)
+  "sama",             // Sam Altman
+  "demishassabis",    // Demis Hassabis
+  "elonmusk",         // Elon Musk
+  "gdb",              // Greg Brockman
+  "drjimfan",         // Jim Fan (NVIDIA)
+  "darioamodei",      // Dario Amodei (Anthropic CEO)
+  "JensenHuang",      // Jensen Huang (NVIDIA CEO)
   // 企業公式
   "AnthropicAI",
   "OpenAI",
@@ -32,6 +36,8 @@ export const WATCHED_HANDLES = [
   "NVIDIAAIDev",
   "huggingface",
   "LangChainAI",
+  "deepseek_ai",      // DeepSeek
+  "NVIDIA",           // NVIDIA
 ];
 
 export interface RawPost {

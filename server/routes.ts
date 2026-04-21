@@ -200,6 +200,50 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // POST /api/admin/entity-cleanup — 不要エンティティ削除・重複除去
+  app.post("/api/admin/entity-cleanup", async (req, res) => {
+    try {
+      const REMOVE_HANDLES = [
+        "shota_imai", "hillbig", "yoheinakajima",
+      ];
+      const removed: string[] = [];
+      const deduped: string[] = [];
+
+      // 指定ハンドルを削除
+      for (const handle of REMOVE_HANDLES) {
+        const { error } = await supabase
+          .from("entities")
+          .delete()
+          .eq("handle", handle);
+        if (!error) removed.push(handle);
+      }
+
+      // 重複エンティティ（同一 handle で複数件）を除去
+      const { data: allEntities } = await supabase
+        .from("entities")
+        .select("id, handle")
+        .order("created_at", { ascending: true });
+
+      if (allEntities) {
+        const seen = new Map<string, string>();
+        for (const e of allEntities) {
+          const h = (e.handle || "").toLowerCase();
+          if (seen.has(h)) {
+            // 後の方を削除
+            await supabase.from("entities").delete().eq("id", e.id);
+            deduped.push(e.handle);
+          } else {
+            seen.set(h, e.id);
+          }
+        }
+      }
+
+      return res.json({ removed, deduped });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   // POST /api/sync/trigger/hourly — 毎時同期を手動トリガー
   app.post("/api/sync/trigger/hourly", async (req, res) => {
     const cronSecret = process.env.CRON_SECRET;
