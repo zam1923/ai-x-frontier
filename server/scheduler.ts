@@ -1,15 +1,14 @@
 /**
  * scheduler.ts — node-cron による完全自律定期実行エンジン
- * Grok Live Search を使用（Apify不要）
+ * X投稿収集に特化（記事生成なし）
  */
 
 import cron from "node-cron";
 import supabase from "./supabase";
 import { WATCHED_HANDLES, savePosts, getEntityMap } from "./collector";
 import {
-  generateArticleWithLiveSearch,
+  searchPostsByHandles,
   updateEntityProfileWithLiveSearch,
-  updateTrendTags,
   type LiveSearchPost,
 } from "./generator";
 
@@ -95,14 +94,49 @@ async function logSyncEnd(
 }
 
 // LiveSearchPost → RawPost 変換してDBに保存
+// エンティティが存在しない場合は自動作成する
 async function savePostsFromLiveSearch(
   posts: LiveSearchPost[],
   entityMap: Map<string, string>
 ): Promise<number> {
   let saved = 0;
   for (const post of posts) {
-    const entityId = entityMap.get(post.author_handle);
+    const handleKey = post.author_handle.toLowerCase();
+    let entityId = entityMap.get(handleKey);
+
+    // エンティティが未登録なら自動作成
+    if (!entityId) {
+      try {
+        const { data } = await supabase
+          .from("entities")
+          .insert({
+            handle: post.author_handle,
+            name: post.author_handle,
+            type: "researcher",
+          })
+          .select("id")
+          .single();
+        if (data?.id) {
+          entityId = data.id;
+          entityMap.set(handleKey, entityId!);
+          console.log(`[scheduler] エンティティ自動作成: @${post.author_handle}`);
+        }
+      } catch {
+        // 重複エラーなどは無視
+        const { data } = await supabase
+          .from("entities")
+          .select("id")
+          .eq("handle", post.author_handle)
+          .single();
+        if (data?.id) {
+          entityId = data.id;
+          entityMap.set(handleKey, entityId!);
+        }
+      }
+    }
+
     if (!entityId) continue;
+
     const count = await savePosts(
       [
         {
@@ -149,52 +183,23 @@ export async function runHourlySync(): Promise<{
   syncStatus.lastRunType = "hourly";
   const errors: string[] = [];
   let postsCollected = 0;
-  let articlesGenerated = 0;
-  const entitiesUpdated = 0;
 
-  const logId = await logSyncStart("hourly", {
-    started_at: new Date().toISOString(),
-  });
+  const logId = await logSyncStart("hourly", { started_at: new Date().toISOString() });
 
   try {
-    console.log("[scheduler] 毎時同期開始（Grok Live Search）...");
+    console.log("[scheduler] 投稿収集開始...");
     const entityMap = await getEntityMap();
 
-    // ハンドルを8件ずつバッチ化（Grok Live Search 1回あたり）
+    // ハンドルを8件ずつバッチ化（allowed_x_handles 上限10件以内）
     const batches = chunkArray(WATCHED_HANDLES, 8);
 
     for (const batch of batches) {
       try {
-        const sourceHandle = batch[0];
-        const { article, posts } = await generateArticleWithLiveSearch(
-          batch,
-          sourceHandle
-        );
-
-        // citationsから取得したポストを保存
+        const posts = await searchPostsByHandles(batch);
         if (posts.length > 0) {
           const saved = await savePostsFromLiveSearch(posts, entityMap);
           postsCollected += saved;
-          console.log(
-            `[scheduler] バッチ(${batch.join(",")}): ${saved}件保存`
-          );
-        }
-
-        // heat_score >= 5 の記事を保存（低すぎる場合のみ除外）
-        if (article && article.heat_score >= 5) {
-          const { error } = await supabase.from("articles").insert({
-            ...article,
-            tags: JSON.stringify(article.tags),
-            entity_ids: JSON.stringify(article.entity_ids),
-          });
-          if (!error) {
-            articlesGenerated++;
-            console.log(
-              `[scheduler] 記事生成「${article.title}」(heat:${article.heat_score})`
-            );
-          } else {
-            console.error("[scheduler] 記事保存エラー:", error);
-          }
+          console.log(`[scheduler] バッチ(${batch[0]}...): ${saved}件保存`);
         }
       } catch (err: any) {
         const msg = `バッチ(${batch[0]}...): ${err.message}`;
@@ -203,73 +208,28 @@ export async function runHourlySync(): Promise<{
       }
     }
 
-    // トレンド検索（ハンドル指定なし → X全体を検索）
+    // トレンド検索（全体）
     try {
-      const { article: trendArticle, posts: trendPosts } =
-        await generateArticleWithLiveSearch([], "trending");
-
+      const trendPosts = await searchPostsByHandles([]);
       if (trendPosts.length > 0) {
         const saved = await savePostsFromLiveSearch(trendPosts, entityMap);
         postsCollected += saved;
       }
-
-      if (trendArticle && trendArticle.heat_score >= 5) {
-        const { error } = await supabase.from("articles").insert({
-          ...trendArticle,
-          tags: JSON.stringify(trendArticle.tags),
-          entity_ids: JSON.stringify(trendArticle.entity_ids),
-        });
-        if (!error) {
-          articlesGenerated++;
-          console.log(
-            `[scheduler] トレンド記事生成「${trendArticle.title}」`
-          );
-        }
-      }
     } catch (err: any) {
       errors.push(`トレンド検索: ${err.message}`);
-      console.error("[scheduler] トレンド検索エラー:", err.message);
     }
 
-    // トレンドタグ再集計
-    try {
-      const { data: recentArticles } = await supabase
-        .from("articles")
-        .select(
-          "tags, title, summary, content, source_handle, source_url, published_at, heat_score, entity_ids"
-        )
-        .order("published_at", { ascending: false })
-        .limit(50);
-
-      if (recentArticles && recentArticles.length > 0) {
-        const parsed = recentArticles.map((a: any) => ({
-          ...a,
-          tags:
-            typeof a.tags === "string" ? JSON.parse(a.tags) : a.tags || [],
-          entity_ids:
-            typeof a.entity_ids === "string"
-              ? JSON.parse(a.entity_ids)
-              : a.entity_ids || [],
-        }));
-        await updateTrendTags(parsed);
-      }
-    } catch (err: any) {
-      errors.push(`トレンドタグ更新: ${err.message}`);
-    }
-
-    const result = { postsCollected, articlesGenerated, entitiesUpdated, errors };
+    const result = { postsCollected, articlesGenerated: 0, entitiesUpdated: 0, errors };
     syncStatus.lastResult = result;
     syncStatus.lastRunAt = new Date().toISOString();
     syncStatus.totalRuns++;
 
     await logSyncEnd(logId, "success", result);
-    console.log(
-      `[scheduler] 毎時同期完了: ポスト${postsCollected}件, 記事${articlesGenerated}件`
-    );
+    console.log(`[scheduler] 投稿収集完了: ${postsCollected}件`);
     return result;
   } catch (err: any) {
     errors.push(`致命的エラー: ${err.message}`);
-    const result = { postsCollected, articlesGenerated, entitiesUpdated, errors };
+    const result = { postsCollected, articlesGenerated: 0, entitiesUpdated: 0, errors };
     syncStatus.lastResult = result;
     syncStatus.lastRunAt = new Date().toISOString();
     await logSyncEnd(logId, "error", result);
