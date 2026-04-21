@@ -93,6 +93,21 @@ async function logSyncEnd(
   }
 }
 
+// Twitter oEmbed で canonical URL からハンドルを解決
+async function resolveHandleFromUrl(url: string): Promise<string> {
+  try {
+    const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}&omit_script=true`;
+    const res = await fetch(oembedUrl);
+    if (!res.ok) return "";
+    const data = await res.json();
+    const authorUrl: string = data.author_url || "";
+    const match = authorUrl.match(/(?:twitter|x)\.com\/([^/?]+)/);
+    return match ? match[1].toLowerCase() : "";
+  } catch {
+    return "";
+  }
+}
+
 // LiveSearchPost → RawPost 変換してDBに保存
 // エンティティが存在しない場合は自動作成する
 async function savePostsFromLiveSearch(
@@ -101,8 +116,20 @@ async function savePostsFromLiveSearch(
 ): Promise<number> {
   let saved = 0;
   for (const post of posts) {
-    const handleKey = post.author_handle.toLowerCase();
-    let entityId = entityMap.get(handleKey);
+    let handle = post.author_handle.toLowerCase();
+
+    // canonical URL (x.com/i/status/...) の場合 oEmbed でハンドルを解決
+    if (!handle && post.url) {
+      handle = await resolveHandleFromUrl(post.url);
+      if (handle) {
+        console.log(`[scheduler] oEmbed解決: ${post.url} → @${handle}`);
+      }
+    }
+
+    // ハンドルが不明な場合はスキップ（ゴミエンティティを作らない）
+    if (!handle) continue;
+
+    let entityId = entityMap.get(handle);
 
     // エンティティが未登録なら自動作成
     if (!entityId) {
@@ -110,27 +137,27 @@ async function savePostsFromLiveSearch(
         const { data } = await supabase
           .from("entities")
           .insert({
-            handle: post.author_handle,
-            name: post.author_handle,
+            handle,
+            name: handle,
             type: "researcher",
           })
           .select("id")
           .single();
         if (data?.id) {
           entityId = data.id;
-          entityMap.set(handleKey, entityId!);
-          console.log(`[scheduler] エンティティ自動作成: @${post.author_handle}`);
+          entityMap.set(handle, entityId!);
+          console.log(`[scheduler] エンティティ自動作成: @${handle}`);
         }
       } catch {
         // 重複エラーなどは無視
         const { data } = await supabase
           .from("entities")
           .select("id")
-          .eq("handle", post.author_handle)
+          .eq("handle", handle)
           .single();
         if (data?.id) {
           entityId = data.id;
-          entityMap.set(handleKey, entityId!);
+          entityMap.set(handle, entityId!);
         }
       }
     }
@@ -142,8 +169,8 @@ async function savePostsFromLiveSearch(
         {
           id: post.post_id,
           text: post.text,
-          author_handle: post.author_handle,
-          author_name: post.author_handle,
+          author_handle: handle,
+          author_name: handle,
           created_at: post.published_at,
           likes: 0,
           retweets: 0,

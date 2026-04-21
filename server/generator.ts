@@ -105,9 +105,11 @@ function citationsToLivePosts(citations: any[]): LiveSearchPost[] {
     const url = c.url || "";
     const match = url.match(/x\.com\/([^/]+)\/status\/(\d+)/);
     if (match) {
+      // x.com/i/status/ID is a handleless canonical URL — don't store "i" as handle
+      const handle = match[1].toLowerCase();
       posts.push({
         post_id: match[2],
-        author_handle: match[1].toLowerCase(),
+        author_handle: handle === "i" ? "" : handle,
         text: c.content || c.text || c.snippet || c.title || "",
         url,
         published_at: c.published_date || c.date || new Date().toISOString(),
@@ -177,7 +179,11 @@ export async function updateEntityProfileWithLiveSearch(
     { type: "x_search", allowed_x_handles: [handle] }
   );
 
-  const posts = citationsToLivePosts(citations);
+  // 検索対象ハンドルが既知なので、空ハンドルのポストはそれで補完する
+  const posts = citationsToLivePosts(citations).map(p => ({
+    ...p,
+    author_handle: p.author_handle || handle.toLowerCase(),
+  }));
 
   const parsed = extractJSON(content);
   if (!parsed) {
