@@ -6,7 +6,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import {
   Activity, RefreshCw, Zap, Clock, CheckCircle2,
-  XCircle, Loader2, Play, Database, Radio, FileText,
+  XCircle, Loader2, Play, Database, Radio,
   ChevronDown, ChevronUp, AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -122,9 +122,6 @@ function LogRow({ log }: { log: SyncLog }) {
             {details.postsCollected != null && (
               <div>収集ポスト: <span className="text-neon-cyan">{details.postsCollected}</span></div>
             )}
-            {details.articlesGenerated != null && (
-              <div>生成記事: <span className="text-neon-cyan">{details.articlesGenerated}</span></div>
-            )}
             {details.entitiesUpdated != null && (
               <div>更新エンティティ: <span className="text-neon-cyan">{details.entitiesUpdated}</span></div>
             )}
@@ -237,15 +234,15 @@ export default function AdminPanel() {
           color="bg-neon-magenta/10 text-neon-magenta"
         />
         <StatCard
-          label="最終記事数"
-          value={status?.lastResult?.articlesGenerated ?? 0}
-          icon={FileText}
+          label="最終ポスト収集数"
+          value={status?.lastResult?.postsCollected ?? 0}
+          icon={Database}
           color="bg-neon-purple/10 text-neon-purple"
         />
         <StatCard
-          label="最終ポスト数"
-          value={status?.lastResult?.postsCollected ?? 0}
-          icon={Database}
+          label="最終エンティティ更新"
+          value={status?.lastResult?.entitiesUpdated ?? 0}
+          icon={Activity}
           color="bg-neon-gold/10 text-neon-gold"
         />
       </div>
@@ -292,7 +289,7 @@ export default function AdminPanel() {
             ) : (
               <Play size={14} />
             )}
-            毎時同期（記事生成）
+            投稿収集（毎時）
           </button>
           <button
             data-testid="trigger-deep"
@@ -339,14 +336,10 @@ export default function AdminPanel() {
               {status.lastRunType === "hourly" ? "（毎時同期）" : "（深掘り同期）"}
             </span>
           </div>
-          <div className="grid grid-cols-3 gap-3 text-center">
+          <div className="grid grid-cols-2 gap-3 text-center">
             <div className="rounded bg-muted/30 p-3">
               <div className="text-lg font-bold font-mono text-neon-cyan">{status.lastResult.postsCollected}</div>
               <div className="text-xs text-muted-foreground mt-0.5">収集ポスト</div>
-            </div>
-            <div className="rounded bg-muted/30 p-3">
-              <div className="text-lg font-bold font-mono text-neon-magenta">{status.lastResult.articlesGenerated}</div>
-              <div className="text-xs text-muted-foreground mt-0.5">生成記事</div>
             </div>
             <div className="rounded bg-muted/30 p-3">
               <div className="text-lg font-bold font-mono text-neon-purple">{status.lastResult.entitiesUpdated}</div>
