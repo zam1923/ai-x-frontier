@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { cn } from "@/lib/utils";
+import { Tweet } from "react-tweet";
 
 function TypeBadge({ type }: { type: string }) {
   const config = {
@@ -61,43 +62,6 @@ function Timeline({ events }: { events: { year: number; event: string; event_ja:
   );
 }
 
-function PostCard({ post }: { post: XPost }) {
-  const ago = (() => {
-    const diff = Date.now() - new Date(post.posted_at).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return "たった今";
-    if (mins < 60) return `${mins}分前`;
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 24) return `${hrs}時間前`;
-    return `${Math.floor(hrs / 24)}日前`;
-  })();
-
-  return (
-    <div data-testid={`post-${post.id}`} className="glass-panel rounded-lg p-4 space-y-3 hover:border-neon-cyan/30 transition-colors">
-      <p className="text-sm leading-relaxed">{post.text}</p>
-      <div className="flex items-center justify-between pt-0.5 border-t border-border/30">
-        <div className="flex items-center gap-3 text-[11px] text-muted-foreground font-mono">
-          <span className="flex items-center gap-1">❤ {post.likes.toLocaleString()}</span>
-          <span className="flex items-center gap-1">🔁 {post.retweets.toLocaleString()}</span>
-          <span className="flex items-center gap-1">💬 {post.replies.toLocaleString()}</span>
-          <span className="text-muted-foreground/50">· {ago}</span>
-        </div>
-        {post.url && (
-          <a
-            href={post.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-neon-cyan/10 border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/20 transition-colors text-[10px] font-mono font-bold"
-          >
-            <Twitter size={9} />
-            Xで見る
-            <ExternalLink size={8} />
-          </a>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function ContributionTag({ text }: { text: string }) {
   return (
@@ -285,9 +249,11 @@ export default function EntityPage() {
               <h2 className="text-xs font-mono font-bold uppercase tracking-widest text-muted-foreground mb-3 flex items-center gap-1.5">
                 <Twitter size={11} />最新投稿
               </h2>
-              <div className="space-y-3">
+              <div className="space-y-3" data-theme="dark">
                 {posts.slice(0, 10).map(post => (
-                  <PostCard key={post.id} post={post} />
+                  <div key={post.id} data-testid={`post-${post.id}`}>
+                    <Tweet id={post.post_id} />
+                  </div>
                 ))}
               </div>
             </section>
