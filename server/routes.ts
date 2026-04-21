@@ -333,19 +333,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
 
       const raw = await response.json();
-      // output 配列の全構造をそのまま返す（どこに投稿URLがあるか確認するため）
+      // annotations から x.com URL を抽出（実際に投稿が来ているか確認）
+      const outputMsg = (raw.output ?? []).find(
+        (o: any) => o.type === "message" || o.role === "assistant"
+      );
+      const contentBlocks: any[] = Array.isArray(outputMsg?.content) ? outputMsg.content : [];
+      const allAnnotations = contentBlocks.flatMap((c: any) => c.annotations ?? []);
+      const xUrls = allAnnotations
+        .map((a: any) => a.url || "")
+        .filter((u: string) => u.includes("x.com") || u.includes("twitter.com"));
+
       return res.json({
         http_status: response.status,
         ok: response.ok,
         model_used: model,
         top_keys: Object.keys(raw),
         output_text_preview: String(raw.output_text ?? "").slice(0, 500),
+        citations_root_count: (raw.citations ?? []).length,
         citations_root: raw.citations ?? [],
+        annotations_count: allAnnotations.length,
+        x_urls_found: xUrls,
         output_full: (raw.output ?? []).map((o: any) => ({
           type: o.type,
           role: o.role ?? null,
           id: o.id ?? null,
-          // content は最初の500文字だけ
           content_preview: typeof o.content === "string"
             ? o.content.slice(0, 500)
             : Array.isArray(o.content)
