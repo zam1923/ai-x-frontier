@@ -81,13 +81,18 @@ async function callGrok(
     data.choices?.[0]?.message?.content ??
     "";
 
+  // Citations can appear at root, on the output message, or as annotations in content blocks
+  const contentBlocks: any[] = Array.isArray(outputMsg?.content) ? outputMsg.content : [];
+  const annotations: any[] = contentBlocks.flatMap((c: any) => c.annotations ?? []);
+
   const citations: any[] =
-    data.citations ??
-    outputMsg?.citations ??
+    (data.citations?.length ? data.citations : null) ??
+    (outputMsg?.citations?.length ? outputMsg.citations : null) ??
+    (annotations.length ? annotations : null) ??
     [];
 
   console.log(
-    `[generator] Grok response: contentLen=${content.length} citations=${citations.length}`
+    `[generator] Grok response: contentLen=${content.length} citations=${citations.length} annotations=${annotations.length}`
   );
 
   return { content, citations };
@@ -96,6 +101,7 @@ async function callGrok(
 function citationsToLivePosts(citations: any[]): LiveSearchPost[] {
   const posts: LiveSearchPost[] = [];
   for (const c of citations) {
+    // Handle both {url:...} and {type:"url_citation", url:...} formats
     const url = c.url || "";
     const match = url.match(/x\.com\/([^/]+)\/status\/(\d+)/);
     if (match) {
