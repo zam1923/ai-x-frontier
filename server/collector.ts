@@ -18,6 +18,8 @@ export const WATCHED_HANDLES = [
   "pirroh",           // Pieter Abbeel
   "geoffreyhinton",   // Geoffrey Hinton
   "yoshuabengio",     // Yoshua Bengio
+  "ch402",            // Chris Olah (解釈可能性研究)
+  "nshazeer",         // Noam Shazeer (Transformer共著者)
   // 企業家
   "sama",             // Sam Altman
   "demishassabis",    // Demis Hassabis
@@ -26,6 +28,9 @@ export const WATCHED_HANDLES = [
   "drjimfan",         // Jim Fan (NVIDIA)
   "darioamodei",      // Dario Amodei (Anthropic CEO)
   "JensenHuang",      // Jensen Huang (NVIDIA CEO)
+  "artmsch",          // Arthur Mensch (Mistral AI CEO)
+  "alexandr_wang",    // Alexandr Wang (Scale AI CEO)
+  "aidangomez",       // Aidan Gomez (Cohere CEO, Transformer共著者)
   // 企業公式
   "AnthropicAI",
   "OpenAI",
@@ -38,6 +43,10 @@ export const WATCHED_HANDLES = [
   "LangChainAI",
   "deepseek_ai",      // DeepSeek
   "NVIDIA",           // NVIDIA
+  "runwayml",         // Runway (動画生成AI)
+  "perplexity_ai",    // Perplexity
+  "elevenlabsio",     // ElevenLabs
+  "scale_ai",         // Scale AI
 ];
 
 export interface RawPost {

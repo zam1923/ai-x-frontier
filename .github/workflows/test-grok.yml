@@ -39,3 +39,12 @@ jobs:
           echo '```json' >> $GITHUB_STEP_SUMMARY
           echo "$LOGS" | python3 -m json.tool >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "$LOGS" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: エンティティDB クリーンアップ（重複・不要エントリ削除）
+        run: |
+          echo "## エンティティ クリーンアップ" >> $GITHUB_STEP_SUMMARY
+          RESULT=$(curl -s --max-time 20 -X POST "${{ secrets.APP_URL }}/api/admin/entity-cleanup")
+          echo "結果: $RESULT"
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo "$RESULT" | python3 -m json.tool >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "$RESULT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
