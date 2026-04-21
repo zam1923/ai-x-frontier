@@ -11,7 +11,7 @@ import {
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
-  { href: "/", icon: LayoutDashboard, label: "ダッシュボード" },
+  { href: "/", icon: LayoutDashboard, label: "HOME" },
   { href: "/admin", icon: Settings, label: "管理パネル" },
 ];
 
